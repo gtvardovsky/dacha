@@ -114,12 +114,19 @@ controls.update();
 
 const U = { uTime: { value: 0 }, uSnow: { value: 0 }, uWind: { value: 1 } };
 
+/* фигурные вырезы балюстрады веранды (фото 8, 24, 26): «косточка» — прямые верх и низ, на концах по два круглых уха с выемкой между ними.
+   Брёвна в рядах с вырезами режутся в шейдере: uCut[i] = (центр z, центр y, полудлина, x стены); изнанка бревна видна как белый пропил */
+const U_CUT = { value: Array.from({ length: 8 }, () => new THREE.Vector4(0, 0, 0, 0)) };
+const CUT_GLSL = `for (int i = 0; i < 8; i++) { vec4 c = uCut[i]; if (c.z <= 0.0) continue; if (abs(vWP.x - c.w) > 0.4) continue;
+  vec2 p = abs(vec2(vWP.z - c.x, vWP.y - c.y)); float hl = c.z, R = 0.17, HH = 0.31, LV = 0.155;
+  if ((p.x < hl - R && p.y < HH) || length(p - vec2(hl - R, LV)) < R) discard; }`;
 /* патч материалов: снег сверху (по мировой нормали) + покачивание листвы/травы */
 function patch(m, opt = {}) {
   const key = JSON.stringify(opt, (k, v) => (k === 'detail' || k === 'detailK') ? !!v : v);
   m.customProgramCacheKey = () => key;
   m.onBeforeCompile = sh => {
     sh.uniforms.uTime = U.uTime; sh.uniforms.uSnow = U.uSnow; sh.uniforms.uWind = U.uWind;
+    if (opt.cut) { sh.uniforms.uCut = U_CUT; sh.fragmentShader = 'uniform vec4 uCut[8];\n' + sh.fragmentShader; }
     if (opt.detail) { sh.uniforms.detailMap = { value: opt.detail }; sh.uniforms.detailK = opt.detailK; }
     sh.vertexShader = 'uniform float uTime; uniform float uWind; varying vec3 vWN; varying vec3 vWP;\n' + sh.vertexShader
       .replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -157,7 +164,9 @@ ${opt.noSnow ? '' : `if (uSnow > 0.001) {
   float nz2 = mix(mix(h00, h10, sf.x), mix(h01, h11, sf.x), sf.y);
   snowF = smoothstep(${(opt.snowLo ?? 0.3).toFixed(2)}, ${(opt.snowHi ?? 0.62).toFixed(2)}, vWN.y + (nz - 0.5) * 0.12 + (nz2 - 0.5) * ${(opt.snowN ?? 0).toFixed(2)}) * uSnow;
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.90, 0.92, 0.96), snowF);
-}`}`)
+}`}
+${opt.cut ? `${CUT_GLSL}
+if (!gl_FrontFacing) diffuseColor.rgb = vec3(0.95, 0.93, 0.90);` : ''}`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.85, snowF);')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix(metalnessFactor, 0.0, snowF);')
       .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = normalize(mix(normal, nonPerturbedNormal, snowF));');
@@ -276,7 +285,7 @@ const MAT = {
   pave: std({ map: TX.pave, normalMap: TX.paveN, normalScale: new THREE.Vector2(1.2, 1.2), roughness: .82 }, { snowLo: .2, snowHi: .4 }),
   steel: std({ color: 0xc9ccd0, roughness: .28, metalness: .9 }),
   darkSteel: std({ color: 0x3a3c40, roughness: .5, metalness: .6 }),
-  glass: std({ color: 0x17212c, roughness: .06, metalness: .3, emissive: 0xffb466, emissiveIntensity: 0 }, { noSnow: true }),
+  glass: null, /* см. ниже: физическое стекло с отражением неба */
   pvc: std({ color: 0xf5f5f2, roughness: .4 }),
   planks: std({ map: TX.planks, roughness: .9 }),
   wood: std({ color: 0xb48b5c, roughness: .85 }),
@@ -299,6 +308,14 @@ const MAT = {
   beacon: std({ color: 0xff7a10, emissive: 0xff6a00, emissiveIntensity: .4, roughness: .3 }, { noSnow: true }),
 };
 patch(MAT.poly, { snowLo: .55, snowHi: .8 });
+/* стекло окон: голубоватое, отражает небо (окружение сцены), сверху светлее, снизу темнее, тонкий косой блик; за стеклом — намёк на комнату и занавески */
+{ const c = cvs(128, 256), g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 0, 256); gr.addColorStop(0, '#a9cfe9'); gr.addColorStop(.45, '#6f9fc4'); gr.addColorStop(1, '#2f4f68'); g.fillStyle = gr; g.fillRect(0, 0, 128, 256);
+  g.fillStyle = 'rgba(70,58,50,.18)'; g.fillRect(0, 150, 128, 106);
+  g.fillStyle = 'rgba(236,228,214,.16)'; g.fillRect(0, 0, 18, 256); g.fillRect(110, 0, 18, 256);
+  g.save(); g.translate(64, 128); g.rotate(-.55); const sg = g.createLinearGradient(-30, 0, 30, 0); sg.addColorStop(0, 'rgba(255,255,255,0)'); sg.addColorStop(.5, 'rgba(255,255,255,.35)'); sg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = sg; g.fillRect(-14, -200, 28, 400); g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(22, -200, 8, 400); g.restore();
+  TX.glass = ctex(c, true, false);
+  MAT.glass = new THREE.MeshPhysicalMaterial({ map: TX.glass, color: 0xd6e6f2, roughness: .05, metalness: .2, clearcoat: .6, clearcoatRoughness: .05, envMapIntensity: 1.0, emissive: 0xffb466, emissiveIntensity: 0, side: THREE.DoubleSide });
+  patch(MAT.glass, { noSnow: true }); allMats.push(MAT.glass); }
 TX.tile.repeat.set(1 / 1.11, 1 / 1.05); TX.tileN.repeat.set(1 / 1.11, 1 / 1.05);
 TX.corr.repeat.set(1, 1); TX.corrN.repeat.set(1, 1);
 TX.pave.repeat.set(1 / 1.6, 1 / 1.6); TX.paveN.repeat.set(1 / 1.6, 1 / 1.6);
@@ -361,7 +378,7 @@ const ENV = {
 };
 scene.environment = ENV.day;
 /* металл и стекло — отражают RoomEnvironment, как в эталоне */
-for (const m of [MAT.steel, MAT.glass]) { m.envMap = envRoom; m.envMapIntensity = .8; }
+for (const m of [MAT.steel]) { m.envMap = envRoom; m.envMapIntensity = .8; }
 
 /* ================= реестр построек (клик и подпись) ================= */
 const BLD = {};
@@ -405,7 +422,7 @@ function gableRoof(parent, o) {
 }
 
 /* ======== срубы: все брёвна — два InstancedMesh (дерево и белые торцы) ======== */
-const LOGS = [], WENDS = [];
+const LOGS = [], WENDS = [], LASTW = {};
 function addLog(b, a0, a1, y, fixed, axis, r, tint) { if (a1 - a0 < 0.05) return; LOGS.push({ b, a0, a1, y, fixed, axis, r, tint }); }
 function addWEnd(b, a0, a1, y, fixed, axis, r) { WENDS.push({ b, a0, a1, y, fixed, axis, r }); }
 /* gaps(wall, y) → [[a,b],...] — проёмы в абсолютных координатах вдоль стены */
@@ -423,18 +440,18 @@ function logBox(o) {
       else addLog(b, sa - (e0 ? p + ext : 0), sb + (e1 ? p + ext : 0), y, fixed, axis, r, tint);
     }
   };
-  const endsX = white === 'all' || white === 'x' ? 'white' : 'wood', endsZ = white === 'all' || white === 'z' ? 'white' : 'wood';
+  const endsX = white === 'all' || white === 'x' ? 'white' : 'wood', endsZ = white === 'all' || white === 'z' ? 'white' : 'wood'; let lastA = -1, lastB = -1;
   for (let i = 0; i < n; i++) {
     const yA = y0 + r + i * s, yB = yA + s / 2;
     if (yA + r > y0 + h - .08) break;
-    if (!skip.n) seg('n', x0, x1, yA, z0, 'x', endsX); if (!skip.s) seg('s', x0, x1, yA, z1, 'x', endsX);
-    if (yB + r <= y0 + h - .08) { if (!skip.w) seg('w', z0, z1, yB, x0, 'z', endsZ); if (!skip.e) seg('e', z0, z1, yB, x1, 'z', endsZ); }
+    if (!skip.n) seg('n', x0, x1, yA, z0, 'x', endsX); if (!skip.s) seg('s', x0, x1, yA, z1, 'x', endsX); lastA = yA;
+    if (yB + r <= y0 + h - .08) { if (!skip.w) seg('w', z0, z1, yB, x0, 'z', endsZ); if (!skip.e) seg('e', z0, z1, yB, x1, 'z', endsZ); lastB = yB; }
     /* торцы внутренних стен — белые столбики */
     if (yA + r > y0 + h - .32) continue;
     for (const xp of parts.x || []) for (const [zz, sg] of [[z0, -1], [z1, 1]]) if (!(parts.xs && parts.xs !== (sg < 0 ? 'n' : 's'))) addWEnd(b, zz + (sg < 0 ? -p : 0), zz + (sg < 0 ? 0 : p), yB, xp, 'z', r * 1.02);
     for (const zp of parts.z || []) for (const [xx, sg] of [[x0, -1], [x1, 1]]) if (!(parts.zs && parts.zs !== (sg < 0 ? 'w' : 'e'))) addWEnd(b, xx + (sg < 0 ? -p : 0), xx + (sg < 0 ? 0 : p), yA, zp, 'x', r * 1.02);
   }
-  return y0 + n * s;
+  LASTW[b] = { x: lastA, z: lastB, s }; return y0 + n * s;
 }
 /* бревенчатый фронтон: стена wall ('n','s','e','w'), ширина у основания span */
 function logGable(o) {
@@ -443,8 +460,9 @@ function logGable(o) {
   const axis = wall === 'n' || wall === 's' ? 'x' : 'z';
   const fixed = wall === 'n' ? cz - o.d / 2 : wall === 's' ? cz + o.d / 2 : wall === 'w' ? cx - o.w / 2 : cx + o.w / 2;
   const mid = axis === 'x' ? cx : cz;
-  for (let i = 0; i < n; i++) {
-    const y = y0 + r + i * s, hw = span / 2 * (1 - (i * s + 2.3 * r) / rise) - .05; if (hw < .12) break;
+  const lw = o.snap && LASTW[b] ? LASTW[b][axis] : -1, yS = lw > 0 ? lw + s : y0 + r;
+  for (let i = 0; i < n + 3; i++) {
+    const y = yS + i * s, hw = span / 2 * (1 - (y - y0 - r + 2.3 * r) / rise) - .05; if (hw < .12) break;
     let segs = [[mid - hw, mid + hw]];
     for (const [ga, gb] of gaps(y)) { const out = []; for (const [sa, sb] of segs) { if (gb <= sa || ga >= sb) { out.push([sa, sb]); continue; } if (ga > sa) out.push([sa, ga]); if (gb < sb) out.push([gb, sb]); } segs = out; }
     for (const [sa, sb] of segs) addLog(b, sa, sb, y, fixed, axis, r, tint);
@@ -512,9 +530,12 @@ const Z = {
   beyondS: [[-480, 940], [2280, 925], [2280, 1416], [-480, 1416]],
 };
 const PAVE = [
-  [[399, 498], [505, 414], [541, 414], [649, 384], [712, 432], [928, 428], [928, 140], [958, 140], [958, 425], [1036, 425], [1036, 140], [1222, 140], [1222, 468], [1526, 468], [1526, 553], [1336, 553], [1336, 610], [1278, 610], [1278, 542], [1255, 542], [1255, 518], [1222, 518], [1222, 504], [1103, 504], [1103, 710], [1067, 710], [1067, 504], [962, 504], [962, 580], [935, 580], [935, 504], [896, 504], [896, 762], [870, 795], [530, 795], [480, 843], [414, 843], [414, 744], [399, 744]],
+  [[399, 498], [505, 414], [541, 414], [649, 384], [712, 432], [928, 428], [928, 140], [958, 140], [958, 425], [1036, 425], [1036, 140], [1222, 140], [1222, 468], [1526, 468], [1526, 553], [1336, 553], [1336, 610], [1278, 610], [1278, 542], [1255, 542], [1255, 518], [1222, 518], [1222, 504], [1103, 504], [1103, 790], [1067, 790], [1067, 504], [962, 504], [962, 580], [935, 580], [935, 504], [896, 504], [896, 762], [870, 795], [530, 795], [480, 843], [414, 843], [414, 744], [399, 744]],
   [[505, 150], [541, 150], [541, 414], [505, 414]],
-  [[333, 411], [393, 411], [393, 567], [333, 567]],
+  [[333, 411], [400, 411], [400, 567], [333, 567]],
+  /* площадка у въезда и ворот — тоже красная плитка (уточнение хозяина) */
+  [[194, 556], [399, 552], [399, 748], [300, 760], [194, 760]],
+  [[249, 411], [333, 411], [333, 556], [249, 556]],
 ];
 function paintGround(season) {
   const g = gctx; g.setTransform(1, 0, 0, 1, 0, 0);
@@ -547,7 +568,7 @@ function paintGround(season) {
   poly(g, Z.roadside, 'rgba(60,92,36,.6)');
   /* огород */
   poly(g, Z.garden, 'rgba(70,104,40,.7)'); blobs(g, Z.garden, 3000, ['60,96,34', '90,124,46', '110,120,70', '120,100,70'], 2, 9, .5);
-  for (const [x, y, w, h] of [[1236, 160, 40, 70], [1290, 160, 40, 70], [1236, 250, 100, 26], [1240, 300, 46, 40], [1300, 300, 50, 40], [1300, 437, 40, 21], [1345, 437, 40, 21], [1236, 380, 40, 50], [1340, 260, 26, 26]]) { g.fillStyle = 'rgba(96,74,52,.8)'; g.fillRect(x, y, w, h); blobs(g, [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 30, ['70,120,40', '90,140,50'], 1.5, 4, .9); }
+  for (const [x, y, w, h] of [[1236, 160, 40, 70], [1290, 160, 40, 70], [1236, 250, 100, 26]]) { g.fillStyle = 'rgba(96,74,52,.8)'; g.fillRect(x, y, w, h); blobs(g, [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 30, ['70,120,40', '90,140,50'], 1.5, 4, .9); }
   /* дорога: гравий, колеи */
   poly(g, Z.road, '#b9b09c'); blobs(g, Z.road, 4000, ['168,160,140', '200,194,178', '150,142,124', '214,208,192'], 1, 5, .5);
   g.save(); g.beginPath(); Z.road.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.clip();
@@ -571,6 +592,10 @@ function paintGround(season) {
     { const [a0, b0] = [-1.3 * PXM + CX, 1.3 * PXM + CY], [a1, b1] = [3.2 * PXM + CX, 12.4 * PXM + CY]; poly(g, [[a0, b0], [a1, b0], [a1, b1], [a0, b1]], '#5e8a33'); }
     poly(g, Z.yardS, '#5e8a33'); blobs(g, Z.yardS, 2500, ['88,140,46', '104,152,56', '76,124,40'], 2, 8, .4);
     blobs(g, Z.lawn, 2500, ['120,176,60', '98,160,50'], 2, 8, .25);
+    { /* щебень и мульча вокруг бассейна (фото 16, 17, 19) */ const px = 900 + 12.6 * PXM, py = 496 + 9.3 * PXM; g.fillStyle = '#9c8a70'; g.beginPath(); g.ellipse(px, py, 3.4 * PXM, 2.6 * PXM, 0, 0, 7); g.fill(); blobs(g, [[px - 82, py - 62], [px + 82, py - 62], [px + 82, py + 62], [px - 82, py + 62]], 900, ['120,100,80', '160,146,124', '96,74,56', '180,170,150'], 1, 4, .55); }
+    for (const [bx, bz] of BEDS) { const px = 900 + bx * PXM, py = 496 + bz * PXM; g.fillStyle = 'rgba(92,72,52,.9)'; g.fillRect(px - 1.3 * PXM, py - .75 * PXM, 2.6 * PXM, 1.5 * PXM); }
+    /* мульча в грядках с туями */
+    for (const b of [[962, 504, 1067, 536], [1103, 504, 1222, 532]]) { poly(g, [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], '#5c4030'); blobs(g, [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], 300, ['110,78,56', '140,104,76', '70,50,36'], 1, 3, .6); }
     poly(g, DUG, '#3d2e24'); blobs(g, DUG, 7000, ['58,44,33', '74,58,42', '40,31,24', '92,78,58', '66,52,40'], 1, 5, .7); blobs(g, DUG, 600, ['80,120,44', '96,136,52'], 1, 4, .55);
   }
   if (season === 'autumn') { g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'multiply'; g.fillStyle = 'rgb(255,232,170)'; g.fillRect(0, 0, GW, GH); g.globalCompositeOperation = 'source-over'; g.setTransform(PS, 0, 0, PS, PO[0], PO[1]); blobs(g, Z.lawn, 1500, ['200,150,60', '180,110,40', '220,180,80'], 1, 3, .7); blobs(g, Z.orchard, 1500, ['200,150,60', '180,110,40'], 1, 3, .7); }
@@ -595,14 +620,17 @@ function paveShape(pts, h = .06) {
   g.rotateX(-Math.PI / 2);
   const m = new THREE.Mesh(g, MAT.pave); m.receiveShadow = true; paveGroup.add(m);
   /* бордюр */
-  for (let i = 0; i < pts.length; i++) { const [ax, az] = W(...pts[i]), [bx, bz] = W(...pts[(i + 1) % pts.length]); const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.round(L / .23)); for (let k = 0; k < n; k++) { const t = (k + .5) / n; EDGE.push(lerp(ax, bx, t), lerp(az, bz, t)); } }
+  for (let i = 0; i < pts.length; i++) { const [ax, az] = W(...pts[i]), [bx, bz] = W(...pts[(i + 1) % pts.length]); EDGE.push(ax, az, bx, bz); }
 }
 const EDGE = [];
 PAVE.forEach(p => paveShape(p));
-{ /* бордюр из круглых плиток-«пятачков» (видео) */
-  const n = EDGE.length / 2, im = new THREE.InstancedMesh(new THREE.CylinderGeometry(.11, .115, .1, 16), std({ color: 0xc9a8a0, roughness: .8 }, { snowLo: .2, snowHi: .4 }), n); const col = new THREE.Color();
-  for (let i = 0; i < n; i++) { tmpM.compose(V3(EDGE[i * 2] + rr(-.01, .01), .06, EDGE[i * 2 + 1] + rr(-.01, .01)), tmpQ.identity(), V3(1, 1, 1)); im.setMatrixAt(i, tmpM); col.setHSL(rr(.0, .04), rr(.12, .25), rr(.6, .72)); im.setColorAt(i, col); }
-  im.receiveShadow = true; im.castShadow = true; paveGroup.add(im); }
+{ /* бордюр: узкая серая бетонная полоса по внешнему краю плитки (фото 11, 15, 16, 21); на стыках соседних полигонов не ставим */
+  const inPave = (x, z) => PAVE.some(P => inPoly(x * PXM + CX, z * PXM + CY, P));
+  const segs = []; for (let i = 0; i < EDGE.length; i += 4) { const ax = EDGE[i], az = EDGE[i + 1], bx = EDGE[i + 2], bz = EDGE[i + 3], L = Math.hypot(bx - ax, bz - az); if (L < 1e-3) continue; const nx = -(bz - az) / L, nz = (bx - ax) / L;
+    const n = Math.max(1, Math.round(L / .5)); for (let k = 0; k < n; k++) { const t0 = k / n, t1 = (k + 1) / n, mx = lerp(ax, bx, (t0 + t1) / 2), mz = lerp(az, bz, (t0 + t1) / 2); if (inPave(mx + nx * .15, mz + nz * .15) && inPave(mx - nx * .15, mz - nz * .15)) continue; segs.push([mx, mz, L / n, Math.atan2(bz - az, bx - ax)]); } }
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, .08, .1), std({ color: 0xa8a6a0, roughness: .9 }, { snowLo: .2, snowHi: .4 }), segs.length);
+  segs.forEach(([x, z, l, a], i) => { tmpM.compose(V3(x, .05, z), tmpQ.setFromAxisAngle(V3(0, 1, 0), -a), V3(l + .01, 1, 1)); im.setMatrixAt(i, tmpM); });
+  im.receiveShadow = true; paveGroup.add(im); }
 
 /* ================= маска для травы ================= */
 const MASKW = 480, MASKH = 320, maskC = cvs(MASKW, MASKH), mctx = maskC.getContext('2d');
@@ -612,6 +640,8 @@ const MASKW = 480, MASKH = 320, maskC = cvs(MASKW, MASKH), mctx = maskC.getConte
   poly(mctx, Z.lawn, 'rgb(60,0,0)'); poly(mctx, Z.orchard, 'rgb(170,0,0)'); poly(mctx, Z.garden, 'rgb(140,0,0)');
   for (const k of ['road', 'sandBig', 'sandBed', 'eastSand', 'mulch']) poly(mctx, Z[k], 'rgb(0,0,0)');
   for (const p of PAVE) poly(mctx, p, 'rgb(0,0,0)');
+  mctx.fillStyle = 'rgb(0,0,0)'; mctx.beginPath(); mctx.ellipse(900 + 12.6 * PXM, 496 + 9.3 * PXM, 3.3 * PXM, 2.5 * PXM, 0, 0, 7); mctx.fill();
+  for (const b of [[962, 504, 1067, 536], [1103, 504, 1222, 532]]) poly(mctx, [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], 'rgb(0,0,0)');
 }
 let maskData = null;
 function maskAt(x, z) { /* мировые → значение 0..1 */
@@ -627,7 +657,7 @@ function inPoly(px, py, P) { let c = false; for (let i = 0, j = P.length - 1; i 
 const inDug = (x, z) => inPoly(x * PXM + CX, z * PXM + CY, DUG) || inPoly(x * PXM + CX, z * PXM + CY, Z.yardS);
 const inYardE = (x, z) => x > -1.3 && x < 5.2 && z > 1.3 && z < 16.0;
 const inOrch = (x, z) => inPoly(x * PXM + CX, z * PXM + CY, DUG);
-FOOT.push([1.0, 12.1, 15.9, 15.7], [6.7, 5.9, 11.3, 10.5]);
+FOOT.push([3.6, 11.9, 16.4, 15.7], [10.0, 7.4, 15.2, 11.2]); /* дровник и бассейн */
 const occupied = (x, z) => FOOT.some(f => x > f[0] && x < f[2] && z > f[1] && z < f[3]);
 
 /* ================= ПОСТРОЙКИ ================= */
@@ -645,7 +675,7 @@ const HONEY = 1.0, DARKLOG = .66;
       if (wall === 's' && y > base + .9 && y < base + 2.25) o.push([-13.6, -12.2], [-9.4, -8.0]); if (wall === 'w' && y > base + .9 && y < base + 2.25) o.push([4.0, 5.4], [8.4, 9.8]); if (wall === 'n' && y > base + .9 && y < base + 2.25) o.push([-7.8, -6.6]); return o; } });
   const rise = 3.4;
   /* фронтоны восток/запад */
-  for (const wall of ['e', 'w']) logGable({ b: 'house', cx, cz, w, d, wall, span: d, y0: wallTop, rise, r, tint: HONEY });
+  for (const wall of ['e', 'w']) logGable({ b: 'house', cx, cz, w, d, wall, span: d, y0: wallTop, rise, r, tint: HONEY, snap: true, gaps: y => wall === 'w' && y > wallTop + .5 && y < wallTop + 1.7 ? [[cz - .52, cz + .52]] : [] });
   /* кросс-фронтон на север: стена-треугольник */
   const hc = wallTop + xgh * (rise / (d / 2));
   { /* фронтон крыла обшит серо-голубой доской (видео) */
@@ -668,20 +698,38 @@ const HONEY = 1.0, DARKLOG = .66;
   for (const k of [-1, 1]) beam(g, V3(xg + k * xgh, wallTop - .25, zN - .3), V3(xg, hc - .3, zN - .3), .4, .03, MAT.fascia, false);
   /* круглые торцы прогонов во фронтонах */
   for (const s of [-1, 1]) for (const dz of [-1.6, 1.6]) { const m = cyl(g, .11, .32, cx + s * (w / 2 + .1), wallTop + 1.5, cz + dz, MAT.white); m.rotation.z = Math.PI / 2; }
-  /* тамбур на север с вальмовой крышей */
-  const ax0 = -14.9, ax1 = -9.5, az0 = 0.0, az1 = zN, ah = 2.7;
-  box(g, ax1 - ax0 - .2, base, az1 - az0, (ax0 + ax1) / 2, base / 2, (az0 + az1) / 2, MAT.plinth);
-  logBox({ b: 'house', cx: (ax0 + ax1) / 2, cz: (az0 + az1) / 2 - .05, w: ax1 - ax0, d: az1 - az0 + .1, y0: base, h: ah - base, r: .12, p: .22, tint: HONEY, skip: { s: true },
-    gaps: (wall, y) => wall === 'n' && y < base + 2.0 ? [[-12.7, -11.8]] : wall === 'e' && y > base + .8 && y < base + 1.75 ? [[.55, 1.45]] : [] });
-  windowAt(g, ax1 + .07, base + 1.27, 1.0, 'x', .9, .95);
-  box(g, .9, 1.95, .06, -12.25, base + .98, az0 - .12, MAT.planks);
-  { const hx = (ax0 + ax1) / 2, hz = (az0 + az1) / 2, hw = (ax1 - ax0) / 2 + .35, hd = (az1 - az0) / 2 + .35, ey = ah, ry = ah + .75, rl = hw - hd;
-    roofPoly(g, [V3(hx - hw, ey, hz - hd), V3(hx + hw, ey, hz - hd), V3(hx + rl, ry, hz), V3(hx - rl, ry, hz)], MAT.corr);
-    roofPoly(g, [V3(hx + hw, ey, hz + hd), V3(hx - hw, ey, hz + hd), V3(hx - rl, ry, hz), V3(hx + rl, ry, hz)], MAT.corr);
-    roofPoly(g, [V3(hx - hw, ey, hz + hd), V3(hx - hw, ey, hz - hd), V3(hx - rl, ry, hz)], MAT.tile);
-    roofPoly(g, [V3(hx + hw, ey, hz - hd), V3(hx + hw, ey, hz + hd), V3(hx + rl, ry, hz)], MAT.tile);
-    beam(g, V3(hx - rl, ry + .03, hz), V3(hx + rl, ry + .03, hz), .16, .06, MAT.trim);
-    for (const [a, b] of [[[-1, -1], [1, -1]], [[1, 1], [-1, 1]]]) beam(g, V3(hx + a[0] * hw, ey - .02, hz + a[1] * hd), V3(hx + b[0] * hw, ey - .02, hz + b[1] * hd), .05, .1, MAT.trim);
+  /* эркер на север (уточнение хозяина, фото 4): многогранный в плане — прямые щёчки у стены, две косые грани и фронтальная, на гранях большие окна в белых рамах над 3–4 венцами,
+     на стыках граней белые торцы, многоскатная крыша по контуру из той же металлочерепицы */
+  { const ah = 2.7, sill = base + .85, top = ah - .12, rr_ = .12;
+    const P = [[-14.9, zN], [-14.9, 1.05], [-13.85, 0.0], [-10.55, 0.0], [-9.5, 1.05], [-9.5, zN]];
+    const pl = new THREE.Shape(P.map(([x, z]) => new THREE.Vector2(x, -z))); const pg_ = new THREE.ExtrudeGeometry(pl, { depth: base, bevelEnabled: false }); pg_.rotateX(-Math.PI / 2);
+    { const m = new THREE.Mesh(pg_, MAT.plinth); m.position.x = 0; m.receiveShadow = true; g.add(m); }
+    const logM = std({ map: TX.log, color: 0xffffff, roughness: .78 }, { noSnow: true });
+    const logBetween = (a, b, y, r) => { const A = V3(a[0], y, a[1]), B = V3(b[0], y, b[1]), L = A.distanceTo(B); const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, L, 14), logM); m.position.copy(A).add(B).multiplyScalar(.5); m.quaternion.setFromUnitVectors(V3(0, 1, 0), B.clone().sub(A).normalize()); m.castShadow = m.receiveShadow = true; g.add(m); };
+    const sL = 2 * rr_ * .86;
+    for (let i = 0; i < P.length - 1; i++) { const a = P[i], b = P[i + 1], glazed = i >= 1 && i <= 3, yMax = glazed ? sill : top;
+      for (let y = base + rr_; y + rr_ <= yMax + .02; y += sL) logBetween(a, b, y + (i % 2) * .02, rr_);
+      if (glazed) { logBetween(a, b, top, rr_); const L = Math.hypot(b[0] - a[0], b[1] - a[1]), ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        const wg = new THREE.Group(); wg.position.set((a[0] + b[0]) / 2, (sill + rr_ + top - rr_) / 2, (a[1] + b[1]) / 2); wg.rotation.y = -ang + Math.PI; g.add(wg);
+        const ww = L - .34, wh = top - sill - 2 * rr_ - .02, t = .07;
+        const gl = new THREE.Mesh(new THREE.PlaneGeometry(ww, wh), MAT.glass); gl.position.z = -.0; wg.add(gl); windowMeshes.push(gl);
+        const back = new THREE.Mesh(new THREE.PlaneGeometry(ww, wh), MAT.glass); back.rotation.y = Math.PI; wg.add(back);
+        box(wg, ww + .1, t, .12, 0, wh / 2, 0, MAT.pvc); box(wg, ww + .1, t, .12, 0, -wh / 2, 0, MAT.pvc); box(wg, t, wh, .12, -ww / 2, 0, 0, MAT.pvc); box(wg, t, wh, .12, ww / 2, 0, 0, MAT.pvc);
+        const nm = Math.max(1, Math.round(ww / .9)); for (let k = 1; k < nm; k++) box(wg, t * .8, wh, .1, -ww / 2 + k * ww / nm, 0, 0, MAT.pvc);
+        box(wg, ww + .2, .04, .22, 0, -wh / 2 - .05, -.08, MAT.pvc); }
+    }
+    /* белые торцы на стыках граней */
+    for (let i = 1; i < P.length - 1; i++) { const [x, z] = P[i]; for (let y = base + .12; y < top + .05; y += .21) { const c = new THREE.Mesh(new THREE.SphereGeometry(.15, 14, 10), MAT.white); c.scale.set(1, .8, 1); c.position.set(x, y, z); c.castShadow = true; g.add(c); } }
+    /* многоскатная крыша: веер скатов от точки на стене дома к карнизу по контуру */
+    const ov = .35, O = P.map((p, i) => { if (i === 0 || i === P.length - 1) return [p[0] + (i === 0 ? -ov : ov), zN];
+      const a = P[i - 1], b = P[i + 1], n1 = [-(p[1] - a[1]), p[0] - a[0]], n2 = [-(b[1] - p[1]), b[0] - p[0]], l1 = Math.hypot(...n1), l2 = Math.hypot(...n2);
+      const nx = n1[0] / l1 + n2[0] / l2, nz = n1[1] / l1 + n2[1] / l2, nl = Math.hypot(nx, nz), cosH = (n1[0] / l1 * nx + n1[1] / l1 * nz) / nl; return [p[0] - nx / nl * ov / cosH, p[1] - nz / nl * ov / cosH]; });
+    const apexL = V3(-13.0, ah + .72, zN), apexR = V3(-11.4, ah + .72, zN), ey = ah + .02;
+    const E = O.map(([x, z]) => V3(x, ey, z));
+    roofPoly(g, [E[0], E[1], apexL], MAT.tile); roofPoly(g, [E[1], E[2], apexL], MAT.tile); roofPoly(g, [E[2], E[3], apexR, apexL], MAT.tile); roofPoly(g, [E[3], E[4], apexR], MAT.tile); roofPoly(g, [E[4], E[5], apexR], MAT.tile);
+    for (let i = 0; i < E.length - 1; i++) { beam(g, E[i].clone().setY(ey - .03), E[i + 1].clone().setY(ey - .03), .05, .12, MAT.trim); }
+    for (const [e, ap] of [[E[1], apexL], [E[2], apexL], [E[3], apexR], [E[4], apexR]]) beam(g, e.clone().setY(ey + .03), ap.clone().setY(ap.y + .03), .12, .05, MAT.trim);
+    beam(g, apexL.clone().setY(apexL.y + .03), apexR.clone().setY(apexR.y + .03), .14, .05, MAT.trim);
   }
   /* стена дома под навесом веранды в тени */
   for (const L of LOGS) if (L.b === 'house' && L.axis === 'z' && Math.abs(L.fixed - (cx + w / 2)) < .05 && L.y < wallTop) L.tint = .62;
@@ -693,22 +741,25 @@ const HONEY = 1.0, DARKLOG = .66;
   const vTop = 2.78;
   for (const pz of posts) { cyl(g, .2, vTop - fy, vx1, fy + (vTop - fy) / 2, pz, MAT.log, 14); for (let y = fy + .12; y < vTop; y += .21) addWEnd('house', vx1 - .3, vx1 + .3, y, pz, 'x', .14); }
   /* балюстрада: 5 бревен, в каждом пролёте два высоких узких проёма с фигурными «ушами», поручень сверху; по южному торцу глухая */
-  const rs = 2 * .12 * .86, bayOps = (a, b) => { const L = b - a; return [[a, a + .3 * L], [b - .3 * L, b]]; };
+  const rs = 2 * .12 * .86, bayOps = (a, b) => { const L = b - a; return [[a + .05, a + .33 * L], [b - .33 * L, b - .05]]; };
+  /* брёвна рядов 1–4 — отдельные меши с материалом-вырезом; ряд 0 и торцы — обычные */
+  const cutMat = std({ map: TX.log, color: 0xffffff, roughness: .78, side: THREE.DoubleSide }, { noSnow: true, cut: true });
+  { const dm = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    dm.onBeforeCompile = sh => { sh.uniforms.uCut = U_CUT; sh.vertexShader = 'varying vec3 vWP;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;'); sh.fragmentShader = 'uniform vec4 uCut[8]; varying vec3 vWP;\n' + sh.fragmentShader.replace('void main() {', 'void main() {\n' + CUT_GLSL); };
+    cutMat.userData.depth = dm; }
+  let nCut = 0; const yCut = fy + .12 + 2.05 * rs;
+  for (let k = 0; k < posts.length - 1; k++) for (const [oa, ob] of bayOps(posts[k] + .22, posts[k + 1] - .22)) U_CUT.value[nCut++].set((oa + ob) / 2, yCut, (ob - oa) / 2, vx1);
   for (let i = 0; i < 5; i++) {
     const y = fy + .12 + i * rs;
     for (let k = 0; k < posts.length - 1; k++) {
-      const a = posts[k] + .22, b = posts[k + 1] - .22; let segs = [[a, b]];
-      if (i >= 2 && i <= 3) { const ops = bayOps(a, b), bulge = i === 2 ? .16 : .08; segs = [[ops[0][1] - bulge, ops[1][0] + bulge]]; }
-      for (const [sa, sb] of segs) addLog('house', sa, sb, y, vx1, 'z', .12, HONEY);
+      const a = posts[k] + .22, b = posts[k + 1] - .22;
+      if (i === 0) { addLog('house', a, b, y, vx1, 'z', .12, HONEY); continue; }
+      const lg = new THREE.CylinderGeometry(.12, .12, b - a, 20, 1); lg.rotateX(Math.PI / 2); lg.rotateZ(hash2(i, k) * 6.28);
+      const m = new THREE.Mesh(lg, cutMat); m.position.set(vx1, y, (a + b) / 2); m.castShadow = m.receiveShadow = true; m.customDepthMaterial = cutMat.userData.depth; g.add(m);
     }
     addLog('house', vx0 + .15, vx1 - .2, y, vz1 - .15, 'x', .12, HONEY);
     /* северный торец: вход по поддонам — проём шириной 1,1 м */
     addLog('house', vx0 + .15, -3.55, y, vz0 + .18, 'x', .12, HONEY); addLog('house', -2.45, vx1 - .22, y, vz0 + .18, 'x', .12, HONEY);
-  }
-  /* фигурный центральный блок в обоих пролётах: скруглённые торцы бревен выпирают «ушами» в проёмы у столбов (фото 8) */
-  for (let k = 0; k < posts.length - 1; k++) { const a = posts[k] + .22, b = posts[k + 1] - .22, ops = bayOps(a, b);
-    for (const i of [2, 3]) { const bulge = i === 2 ? .16 : .08; for (const [ze, sg] of [[ops[0][1] - bulge, -1], [ops[1][0] + bulge, 1]]) { const c = new THREE.Mesh(new THREE.SphereGeometry(.12, 14, 10), MAT.log); c.scale.set(1, 1, 1.15); c.position.set(vx1, fy + .12 + i * rs, ze); c.castShadow = true; g.add(c); } }
-    for (const [ze, sg] of [[ops[0][1] - .1, -1], [ops[1][0] + .1, 1]]) { const e = new THREE.Mesh(new THREE.CylinderGeometry(rs * 1.05, rs * 1.05, .24, 20, 1, false, 0, Math.PI), MAT.log); e.rotation.z = Math.PI / 2; e.rotation.x = sg > 0 ? -Math.PI / 2 : Math.PI / 2; e.position.set(vx1, fy + .12 + 2.5 * rs, ze); e.castShadow = true; g.add(e); }
   }
   /* навес веранды: металлочерепица под фронтоном, белая подшивка и карниз */
   const vov = .45, vEdge = vx1 + vov, vH0 = wallTop + .55, vH1 = vTop + .1;
@@ -738,13 +789,13 @@ const HONEY = 1.0, DARKLOG = .66;
   const cx = 21.4, cz = 7.84, w = 8.6, d = 10.6, base = .35, wallTop = 3.3, r = .13, rise = 3.4;
   FOOT.push([cx - w / 2 - .4, cz - d / 2 - 2.6, cx + w / 2 + .4, cz + d / 2 + .4]);
   box(g, w - .3, base, d - .3, cx, base / 2, cz, MAT.plinth);
+  const LX = cx - w / 2 + 1.9, LZ = 5.6, LDOOR = cz - d / 2 + 1.85; const BDOOR = cx - 1.5; /* лоджия в северо-западном углу */
   logBox({ b: 'banya', cx, cz, w, d, y0: base, h: wallTop - base, r, p: .3, tint: DARKLOG, parts: { z: [5.6, 8.7, 11.3], x: [] },
-    gaps: (wall, y) => { const o = []; if (wall === 'w' && y > base + .85 && y < base + 1.9) o.push([cz - 3.6, cz - 2.7], [cz + 1.0, cz + 1.8]); if (wall === 'n' && y < base + 2.05) o.push([cx - 2.6, cx - 1.7]); if (wall === 'n' && y > base + .9 && y < base + 1.9) o.push([cx + .6, cx + 1.6]); if (wall === 'e' && y > base + .9 && y < base + 1.8) o.push([cz - 2, cz - 1]); return o; } });
-  for (const wall of ['n', 's']) logGable({ b: 'banya', cx, cz, w, d, wall, span: w, y0: wallTop, rise, r, tint: DARKLOG, gaps: y => wall === 'n' && y > wallTop + .5 && y < wallTop + 1.6 ? [[cx - .55, cx + .55]] : [] });
+    gaps: (wall, y) => { const o = []; if (wall === 'w' && y > base + .85 && y < base + 1.9) o.push([cz + 1.0, cz + 1.8]); if (wall === 'w' && y < wallTop - .3) o.push([cz - d / 2 - .5, LZ]); if (wall === 'n' && y < wallTop - .3) o.push([cx - w / 2 - .5, LX]); if (wall === 'n' && y < base + 2.05) o.push([BDOOR - .45, BDOOR + .45]); if (wall === 'n' && y > base + .9 && y < base + 1.9) o.push([cx + .6, cx + 1.6]); if (wall === 'e' && y > base + .9 && y < base + 1.8) o.push([cz - 2, cz - 1]); return o; } });
+  for (const wall of ['n', 's']) logGable({ b: 'banya', cx, cz, w, d, wall, span: w, y0: wallTop, rise, r, tint: DARKLOG, snap: true, gaps: y => wall === 'n' && y > wallTop + .5 && y < wallTop + 1.6 ? [[cx - .55, cx + .55]] : [] });
   windowAt(g, cx, wallTop + 1.05, cz - d / 2 - .07, '-z', 1.0, 1.0);
-  windowAt(g, cx - w / 2 - .07, base + 1.37, cz - 3.15, '-x', .85, .95, MAT.wood); windowAt(g, cx - w / 2 - .07, base + 1.37, cz + 1.4, '-x', .7, .8, MAT.wood);
+  windowAt(g, cx - w / 2 - .07, base + 1.37, cz + 1.4, '-x', .7, .8, MAT.wood);
   windowAt(g, cx + 1.1, base + 1.4, cz - d / 2 - .07, '-z', 1.0, 1.0, MAT.wood);
-  box(g, .9, 1.95, .06, cx - 2.15, base + .98, cz - d / 2 - .1, MAT.planks);
   const R = gableRoof(g, { cx, cz, span: w, len: d, eaveY: wallTop, rise, axis: 'z', ovS: .55, ovE: .5, matA: MAT.tile, matB: MAT.tile });
   /* слуховые окна-треугольники на обоих скатах */
   const sl = rise / (w / 2), ridgeY = wallTop + rise;
@@ -773,31 +824,55 @@ const HONEY = 1.0, DARKLOG = .66;
     for (const dz of [-.22, .22]) beam(g, V3(xs[0], yAt(xs[0]) + .1, z + dz), V3(xs[1], yAt(xs[1]) + .1, z + dz), .05, .05, MAT.steel);
     for (let t = .05; t < 1; t += .1) { const x = lerp(xs[0], xs[1], t); beam(g, V3(x, yAt(x) + .12, z - .22), V3(x, yAt(x) + .12, z + .22), .035, .035, MAT.steel); }
     beam(g, V3(xs[0], yAt(xs[0]) + .1, z), V3(xs[0] - .2, .4, z), .05, .05, MAT.steel); }
-  /* заворотное крыльцо: вдоль северного фронтона и за угол вдоль западной стены (к сараю с навесом), перила, ступени на углу, кровля огибает угол */
-  const px0 = cx - 3.2, px1 = cx + 3.2, pz0 = cz - d / 2 - 2.3, pz1 = cz - d / 2, py = .62;
-  const wx0 = cx - w / 2 - 2.0, wx1 = cx - w / 2, wz1 = pz1 + 3.6; /* западное крыло крыльца */
+  /* крыльцо поворотное (фото 2, 22, 30, 31): площадка под навесом-скатом перед северным фронтоном, ступени на её северо-западном углу смотрят на запад (вдоль длинной стены),
+     поднявшись, поворачиваешь направо — в лоджию, врезанную в северо-западный угол сруба под основным свесом; на линии западной стены — балюстрада из брёвен, дверь и дартс на внутренней стене */
+  const pz0 = cz - d / 2 - 2.3, pz1 = cz - d / 2, py = .62, x0w = cx - w / 2, px1 = cx + 3.2, wx0 = x0w - .1;
+  const PH = 2.45, rL = .11, sL = 2 * rL * .86, wEnd = (a, y, fixed, axis, dir) => addWEnd('banya', dir > 0 ? a : a - .07, dir > 0 ? a + .07 : a, y, fixed, axis, rL * 1.03);
+  const logRun = (a0, a1, y, fixed, axis, e0 = true, e1 = true) => { addLog('banya', a0, a1, y, fixed, axis, rL, DARKLOG * 1.05); if (e0) wEnd(a0, y, fixed, axis, -1); if (e1) wEnd(a1, y, fixed, axis, 1); };
   const deck = (x0, x1, z0, z1) => { box(g, x1 - x0, .12, z1 - z0, (x0 + x1) / 2, py, (z0 + z1) / 2, MAT.wood); box(g, x1 - x0 - .2, py - .06, z1 - z0 - .2, (x0 + x1) / 2, (py - .06) / 2, (z0 + z1) / 2, MAT.plinth); };
-  deck(wx0, px1, pz0, pz1); deck(wx0, wx1, pz1, wz1);
-  const PH = 2.45, postAt = (x, z) => { cyl(g, .11, PH, x, py + PH / 2, z, MAT.log, 12); for (let y = py + .12; y < py + PH - .05; y += .22) addWEnd('banya', x - .2, x + .2, y, z, 'x', .1); };
-  const posts = [[wx0 + .12, pz0 + .12], [cx - 1.2, pz0 + .12], [cx + 1.2, pz0 + .12], [px1 - .12, pz0 + .12], [wx0 + .12, pz1 + .8], [wx0 + .12, wz1 - .12]];
-  for (const [x, z] of posts) postAt(x, z);
-  beam(g, V3(wx0, py + PH, pz0 + .12), V3(px1, py + PH, pz0 + .12), .14, .16, MAT.wood);
-  beam(g, V3(wx0 + .12, py + PH, pz0), V3(wx0 + .12, py + PH, wz1), .14, .16, MAT.wood);
-  /* перила с балясинами; проход к ступеням на северо-западном углу */
-  const rail = (a, b) => { beam(g, V3(a[0], py + .95, a[1]), V3(b[0], py + .95, b[1]), .08, .08, MAT.wood); const L = Math.hypot(b[0] - a[0], b[1] - a[1]); for (let t = .12; t < L; t += .16) { const x = lerp(a[0], b[0], t / L), z = lerp(a[1], b[1], t / L); box(g, .045, .85, .045, x, py + .5, z, MAT.woodRaw); } };
-  rail([cx - 1.2, pz0 + .12], [px1 - .12, pz0 + .12]); rail([wx0 + .12, pz1 + .8], [wx0 + .12, wz1 - .12]); rail([wx0 + .12, wz1 - .12], [wx1, wz1 - .12]);
-  for (let i = 0; i < 3; i++) box(g, 1.5, .2 * (i + 1), .32, wx0 + 1.05, .1 * (i + 1), pz0 - .9 + i * .3, MAT.wood); /* ступени на север у угла */
-  /* кровля: северный скат и западный скат, ендова на углу */
+  deck(wx0, px1, pz0, pz1); deck(x0w + .05, LX, pz1, LZ);
+  /* лоджия: внутренние стены из бревна (восточная с дверью, южная), белые торцы выходят на западный фасад */
+  for (let y = base + r, i = 0; y + r < wallTop - .3; y += 2 * r * .86, i++) {
+    const yb = y + r * .86;
+    addLog('banya', pz1, LZ, yb, LX, 'z', r, DARKLOG);
+    addLog('banya', x0w, LX + .15, y, LZ, 'x', r, DARKLOG); }
+  /* входная дверь — в торцевой стене под навесом, между лоджией и ступенями */
+  box(g, .9, 1.95, .06, BDOOR, base + .98, pz1 - .14, MAT.planks); box(g, .05, .14, .02, BDOOR + .3, base + 1.0, pz1 - .18, MAT.iron);
+  /* балюстрада лоджии на линии западной стены и столб в дальнем углу */
+  const postM = std({ map: TX.log, color: 0xf2e2c8, roughness: .8 }, { noSnow: true });
+  for (let i = 0; i < 4; i++) { const y = py + .06 + rL + i * sL; logRun(pz1 + .15, LZ, y, x0w + .02, 'z', true, false); }
+  cyl(g, .12, wallTop - py - .02, x0w + .14, py + (wallTop - py) / 2, pz1 + .14, postM, 14);
+  /* площадка перед фронтоном: обвязка, балюстрада по северу и востоку, по западу — до ступеней */
+  const zF = pz0 + .12, xW = wx0 + .12, xE = px1 - .12, sx0 = cx - .8, sx1 = cx + .8;
+  for (const y of [.12, .32]) { logRun(wx0, px1, y, zF, 'x'); logRun(pz0, pz1, y + .1, xW, 'z'); logRun(pz0, pz1, y + .1, xE, 'z'); }
+  for (let i = 0; i < 4; i++) { const y = py + .06 + rL + i * sL;
+    logRun(wx0, sx0, y, zF, 'x'); logRun(sx1, px1, y, zF, 'x'); logRun(pz0 + .05, pz1, y + sL / 2, xE, 'z'); logRun(pz0 + .05, pz1 - .05, y + sL / 2, xW, 'z'); }
+  for (const [x, z] of [[xW, zF], [sx0 - .02, zF], [sx1 + .02, zF], [xE, zF]]) cyl(g, .12, PH + .02, x, py + PH / 2, z, postM, 14);
+  beam(g, V3(wx0, py + PH, zF), V3(px1, py + PH, zF), .2, .2, postM);
+  beam(g, V3(xW, py + PH, pz0), V3(xW, py + PH, pz1), .18, .18, postM); beam(g, V3(xE, py + PH, pz0), V3(xE, py + PH, pz1), .18, .18, postM);
+  /* ступени посередине торца: полубрёвна с белыми торцами, фасадом на север, по бокам щёчки; поднявшись, поворачиваешь направо к лоджии */
+  const stepW = sx1 - sx0 - .1, scx = (sx0 + sx1) / 2;
+  for (let i = 0; i < 3; i++) { const y = .16 + i * .17, z = pz0 - .78 + i * .27;
+    box(g, stepW, .14, .3, scx, y - .02, z + .05, MAT.wood);
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(.09, .09, stepW, 14, 1, false, 0, Math.PI), MAT.wood); t.rotation.z = Math.PI / 2; t.rotation.x = -Math.PI / 2; t.position.set(scx, y - .02, z - .1); t.castShadow = true; g.add(t);
+    for (const s_ of [-1, 1]) { const c = cyl(g, .085, .04, scx + s_ * stepW / 2, y - .02, z - .02, MAT.white, 14); c.rotation.z = Math.PI / 2; } }
+  for (const xc of [sx0, sx1]) for (let k = 0; k < 3; k++) logRun(pz0 - .85 + k * .27, pz0 + .05, .12 + k * .19, xc, 'z');
+  /* гирлянда-«сосульки» вдоль карнизов навеса и основного свеса над лоджией */
+  { const gm = std({ color: 0xffffff, emissive: 0xfff0c8, emissiveIntensity: .25, roughness: .4 }, { noSnow: true }); window.__garland = gm;
+    const pts = []; const ey = py + PH + .1;
+    for (let x = wx0 - .4; x < px1 + .25; x += .07) pts.push([x, ey, pz0 - .42]);
+    for (let z = pz0 - .4; z < pz1; z += .07) pts.push([wx0 - .42, ey + (z - pz0 + .4) * .12, z]);
+    for (let z = pz1; z < LZ + 2.5; z += .07) pts.push([x0w - .5, wallTop - .45, z]);
+    const im = new THREE.InstancedMesh(new THREE.CylinderGeometry(.008, .008, 1, 4), gm, pts.length); pts.forEach(([x, y, z], i) => { const L = .08 + .17 * (.5 + .5 * Math.sin((x + z) * 23.7)); tmpM.compose(V3(x, y - L / 2, z), tmpQ.identity(), V3(1, L, 1)); im.setMatrixAt(i, tmpM); }); im.userData.noAO = true; g.add(im); }
+  /* кровля навеса: один скат на север от фронтона */
   const ovr = .45, hiY = wallTop - .05, loY = py + PH + .12;
-  const nA = V3(wx0 - ovr, loY, pz0 - ovr), nB = V3(px1 + .3, loY, pz0 - ovr), nC = V3(px1 + .3, hiY, pz1), nD = V3(wx1, hiY, pz1);
-  const wA = V3(wx0 - ovr, loY, wz1 + .3), wB = V3(wx1, hiY, wz1 + .3);
-  roofPoly(g, [nA, nB, nC, nD], MAT.tile); roofPoly(g, [wA, nA, nD, wB], MAT.tile);
-  beam(g, nA.clone().setY(loY - .02), nB.clone().setY(loY - .02), .05, .12, MAT.trim); beam(g, nA.clone().setY(loY - .02), wA.clone().setY(loY - .02), .05, .12, MAT.trim); beam(g, nA, nD, .06, .06, MAT.trim);
-  FOOT.push([wx0 - .5, pz0 - 1.4, px1 + .5, wz1 + .5]);
-  /* доски, сложенные на навесе (видны с дрона) */
-  for (let i = 0; i < 6; i++) { const z = pz0 + .1 + i * .32; const y = lerp(py + 2.7, wallTop + .05, (z - pz0 + .45) / (pz1 - pz0 + .45)); beam(g, V3(px0 + rr(-.2, .6), y + .05, z), V3(px1 + rr(-.3, .9), y + .05, z + rr(-.05, .05)), .14, .04, MAT.woodRaw); }
-  /* дартс и мелочи на стене у крыльца */
-  { const m = cyl(g, .22, .04, cx - 1.0, base + 1.7, pz1 - .07, new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: .7 })); m.rotation.x = Math.PI / 2; }
+  const nA = V3(wx0 - ovr, loY, pz0 - ovr), nB = V3(px1 + .3, loY, pz0 - ovr), nC = V3(px1 + .3, hiY, pz1), nD = V3(wx0 - ovr, hiY, pz1);
+  roofPoly(g, [nA, nB, nC, nD], MAT.tile);
+  beam(g, nA.clone().setY(loY - .02), nB.clone().setY(loY - .02), .05, .12, MAT.trim); beam(g, nA, nD, .05, .12, MAT.trim); beam(g, nB, nC, .05, .12, MAT.trim);
+  FOOT.push([wx0 - .5, pz0 - 1.2, px1 + .5, pz1 + .1]);
+  /* дартс на внутренней стене лоджии рядом с дверью */
+  { const c = cvs(128, 128), dg = c.getContext('2d'); dg.fillStyle = '#151515'; dg.fillRect(0, 0, 128, 128); for (let k = 0; k < 20; k++) { const a0 = k / 20 * 6.283 - Math.PI / 2 - .157; for (const [r0, r1, cols] of [[56, 60, ['#c0201c', '#1f7a3a']], [34, 56, ['#151515', '#efe2c0']], [30, 34, ['#c0201c', '#1f7a3a']], [8, 30, ['#151515', '#efe2c0']]]) { dg.fillStyle = cols[k % 2]; dg.beginPath(); dg.arc(64, 64, r1, a0, a0 + .314); dg.arc(64, 64, r0, a0 + .314, a0, true); dg.fill(); } } dg.fillStyle = '#1f7a3a'; dg.beginPath(); dg.arc(64, 64, 8, 0, 7); dg.fill(); dg.fillStyle = '#c0201c'; dg.beginPath(); dg.arc(64, 64, 4, 0, 7); dg.fill();
+    const m = new THREE.Mesh(new THREE.CircleGeometry(.23, 32), std({ map: ctex(c, true, false), roughness: .8 }, { noSnow: true })); m.position.set(LX - .15, base + 1.75, LDOOR + .4); m.rotation.y = -Math.PI / 2; g.add(m); }
 }
 
 /* --- Избушка (фото 3): повал — брёвна расходятся кверху, крутая крыша, серая дощатая дверь, фонарь, труба на коньке --- */
@@ -883,7 +958,7 @@ const HONEY = 1.0, DARKLOG = .66;
   box(g, w - .2, base, sd - .2, cx, base / 2, scz, MAT.plinth);
   logBox({ b: 'long', cx, cz: scz, w, d: sd, y0: base, h: wallTop - base, r: .12, p: .26, tint: .92,
     gaps: (wall, y) => { const o = []; if (wall === 's' && y < base + 2.0) o.push([cx - .45, cx + .45]); if (wall === 'e' && y > base + 1.0 && y < base + 1.7) o.push([scz - .35, scz + .35]); return o; } });
-  for (const wall of ['n', 's']) logGable({ b: 'long', cx, cz: scz, w, d: sd, wall, span: w, y0: wallTop - .08, rise, r: .12, tint: .92 });
+  for (const wall of ['n', 's']) logGable({ b: 'long', cx, cz: scz, w, d: sd, wall, span: w, y0: wallTop - .08, rise, r: .12, tint: .92, snap: true });
   windowAt(g, cx + w / 2 + .07, base + 1.35, scz, 'x', .6, .6);
   box(g, .9, 1.95, .06, cx, base + .98, zSplit + .1, MAT.planks);
   for (const y of [base + .45, base + 1.5]) box(g, .5, .05, .02, cx + .15, y, zSplit + .14, MAT.iron);
@@ -907,25 +982,49 @@ const HONEY = 1.0, DARKLOG = .66;
   cyl(g, .3, .88, cx + w / 2 - .5, .44, zS - .8, std({ color: 0x2e5aa8, roughness: .4 }), 16);
 }
 
-/* --- Теплица из сотового поликарбоната --- */
+/* --- Теплица из сотового поликарбоната (фото 29): арка, обшита молочным поликарбонатом со всех сторон, оцинкованные дуги и продольные связи,
+   торец плоский с дверью в рамке и форточкой над ней, внутри смутно видны кусты томатов --- */
 {
   const g = bld('green', 'Теплица', 'поликарбонат, арочная', 21.4, -11.3, 5, 2.2);
-  const cx = 21.4, cz = -11.3, rad = 1.85, len = 8.8;
-  FOOT.push([cx - 2, cz - 4.6, cx + 2, cz + 4.6]);
-  const shell = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, len, 40, 1, true, -Math.PI / 2, Math.PI), MAT.poly);
-  shell.rotation.x = Math.PI / 2; shell.rotation.z = 0; shell.position.set(cx, .25, cz);
-  /* цилиндр по оси z: дуга сверху */
-  shell.rotation.set(Math.PI / 2, 0, 0); shell.geometry.rotateY(Math.PI / 2 * 0);
-  g.add(shell); shell.renderOrder = 2;
-  for (const s of [-1, 1]) { const e = new THREE.Mesh(new THREE.CircleGeometry(rad, 40, 0, Math.PI), MAT.poly); e.position.set(cx, .25, cz + s * len / 2); g.add(e); }
-  for (let z = -len / 2; z <= len / 2 + .01; z += 1) { const a = new THREE.Mesh(new THREE.TorusGeometry(rad + .01, .025, 6, 40, Math.PI), MAT.steel); a.position.set(cx, .25, cz + z); g.add(a); a.castShadow = true; }
-  for (const ang of [.35, .8, 1.25, 1.57, 1.9, 2.35, 2.8]) beam(g, V3(cx + Math.cos(ang) * rad, .25 + Math.sin(ang) * rad, cz - len / 2), V3(cx + Math.cos(ang) * rad, .25 + Math.sin(ang) * rad, cz + len / 2), .03, .03, MAT.steel);
-  box(g, 2 * rad + .1, .25, len + .1, cx, .125, cz, MAT.woodOld);
-  box(g, .8, 1.7, .04, cx, 1.05, cz + len / 2 + .02, MAT.steel);
-  /* томаты внутри */
-  const leaf = std({ color: 0x3f7a2a, roughness: .8 });
-  for (const xx of [-1.0, 1.0]) for (let z = -3.8; z < 3.9; z += .55) { const b = new THREE.Mesh(new THREE.IcosahedronGeometry(.32, 1), leaf); b.position.set(cx + xx, .9 + rr(-.1, .2), cz + z); b.scale.y = 1.8; g.add(b); }
-  shell.castShadow = false;
+  const cx = 21.4, cz = -11.3, W = 3.3, H = 2.2, len = 8.6, y0 = .12, N = 36;
+  FOOT.push([cx - W / 2 - .2, cz - len / 2 - .2, cx + W / 2 + .2, cz + len / 2 + .2]);
+  /* профиль арки: почти полукруг с чуть приподнятым верхом */
+  const prof = []; for (let i = 0; i <= N; i++) { const a = Math.PI * i / N; prof.push([-Math.cos(a) * W / 2, y0 + Math.pow(Math.sin(a), .85) * H]); }
+  const polyC = cvs(256, 64), pg = polyC.getContext('2d'); pg.fillStyle = '#e8ecee'; pg.fillRect(0, 0, 256, 64);
+  for (let x = 0; x < 256; x += 4) { pg.fillStyle = 'rgba(150,160,166,.28)'; pg.fillRect(x, 0, 1, 64); } pg.fillStyle = 'rgba(120,130,136,.6)'; pg.fillRect(0, 0, 3, 64);
+  const polyT = ctex(polyC); polyT.repeat.set(1 / 2.1, 1);
+  const pcM = std({ map: polyT, color: 0xd4dadd, roughness: .32, metalness: .05, transparent: true, opacity: .52, side: THREE.DoubleSide, depthWrite: false }, { snowLo: .6, snowHi: .85 });
+  /* оболочка: u — вдоль длины (швы листов поперёк), v — по дуге */
+  { const pos = [], uv = []; let arc = [0]; for (let i = 1; i <= N; i++) arc.push(arc[i - 1] + Math.hypot(prof[i][0] - prof[i - 1][0], prof[i][1] - prof[i - 1][1]));
+    for (let i = 0; i < N; i++) { const [ax, ay] = prof[i], [bx, by] = prof[i + 1], z0 = cz - len / 2, z1 = cz + len / 2;
+      pos.push(cx + ax, ay, z0, cx + bx, by, z0, cx + bx, by, z1, cx + ax, ay, z0, cx + bx, by, z1, cx + ax, ay, z1);
+      uv.push(0, arc[i], 0, arc[i + 1], len, arc[i + 1], 0, arc[i], len, arc[i + 1], len, arc[i]); }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.computeVertexNormals();
+    const shell = new THREE.Mesh(geo, pcM); shell.renderOrder = 3; g.add(shell); }
+  /* торцы: плоские листы с вертикальными каналами */
+  const endT = polyT.clone(); endT.needsUpdate = true; endT.repeat.set(1 / 2.1, 1);
+  const endM = std({ map: endT, color: 0xd0d6d9, roughness: .32, metalness: .05, transparent: true, opacity: .55, side: THREE.DoubleSide, depthWrite: false }, { noSnow: true });
+  for (const s_ of [-1, 1]) { const sh = new THREE.Shape(prof.map(([x, y]) => new THREE.Vector2(x, y))); const m = new THREE.Mesh(new THREE.ShapeGeometry(sh, 12), endM); m.position.set(cx, 0, cz + s_ * len / 2); m.renderOrder = 3; g.add(m); }
+  /* каркас: дуги через 1 м, продольные связи, рамы двери и форточки */
+  const galv = std({ color: 0xc4c9cd, roughness: .35, metalness: .75 });
+  const archCurve = new THREE.CatmullRomCurve3(prof.map(([x, y]) => V3(x, y, 0)));
+  for (let k = 0; k <= Math.round(len); k++) { const z = cz - len / 2 + k * len / Math.round(len); const t = new THREE.Mesh(new THREE.TubeGeometry(archCurve, 40, .022, 6), galv); t.position.set(cx, 0, z); t.castShadow = true; g.add(t); }
+  for (const i of [3, 9, 14, 18, 22, 27, 33]) { const [x, y] = prof[i]; beam(g, V3(cx + x, y + .01, cz - len / 2), V3(cx + x, y + .01, cz + len / 2), .03, .03, galv); }
+  const ze = cz + len / 2 + .02, dw = .82, dh = 1.75;
+  const frame = (x0_, y0_, w_, h_) => { for (const [a, b] of [[[x0_, y0_], [x0_ + w_, y0_]], [[x0_, y0_ + h_], [x0_ + w_, y0_ + h_]], [[x0_, y0_], [x0_, y0_ + h_]], [[x0_ + w_, y0_], [x0_ + w_, y0_ + h_]]]) beam(g, V3(cx + a[0], a[1], ze), V3(cx + b[0], b[1], ze), .04, .04, galv); };
+  frame(-dw / 2, y0, dw, dh); frame(-dw / 2, y0 + dh + .08, dw, .42); beam(g, V3(cx - dw / 2, y0 + dh * .5, ze), V3(cx + dw / 2, y0 + dh * .5, ze), .03, .03, galv);
+  for (const s_ of [-1, 1]) beam(g, V3(cx + s_ * (dw / 2 + .45), y0, ze), V3(cx + s_ * (dw / 2 + .45), y0 + 1.9, ze), .035, .035, galv);
+  box(g, .04, .14, .05, cx + dw / 2 - .1, y0 + .95, ze + .03, MAT.iron);
+  { const t = new THREE.Mesh(new THREE.TubeGeometry(archCurve, 40, .022, 6), galv); t.position.set(cx, 0, cz - len / 2); g.add(t); }
+  box(g, W + .1, .12, len + .1, cx, .06, cz, MAT.woodOld);
+  /* томаты внутри — обычные кусты 1–1,3 м на двух грядах */
+  const tom = [], tc = new THREE.Color();
+  for (const xx of [-.85, .85]) { box(g, .9, .2, len - .6, cx + xx, .1, cz, std({ color: 0x5a4330, roughness: 1 })); for (let z = -len / 2 + .5; z < len / 2 - .4; z += .45) for (let k = 0; k < 4; k++) { const geo = new THREE.IcosahedronGeometry(rr(.13, .18), 1); geo.scale(1, 1.6, 1); geo.translate(cx + xx + rr(-.18, .18), rr(.35, 1.15), cz + z + rr(-.12, .12)); tom.push(prepB(geo, tc.setHSL(rr(.27, .32), .5, rr(.12, .18)).clone())); } }
+  { const m = new THREE.Mesh(mergeGeometries(tom), std({ vertexColors: true, roughness: .85 }, { noSnow: true })); g.add(m); window.__ghPlants = m; }
+  for (let z = -len / 2 + .5; z < len / 2 - .4; z += .9) for (const xx of [-.85, .85]) cyl(g, .012, 1.4, cx + xx, .7, cz + z, MAT.woodRaw, 4);
+  /* зимой: снег на гребне */
+  { const snow = []; for (let i = 12; i < 25; i++) { const [ax, ay] = prof[i], [bx, by] = prof[i + 1]; const th = .09 * Math.sin(Math.PI * (i - 11) / 14); const geo = new THREE.BoxGeometry(Math.hypot(bx - ax, by - ay) + .02, th + .02, len + .1); geo.rotateZ(Math.atan2(by - ay, bx - ax)); geo.translate(cx + (ax + bx) / 2, (ay + by) / 2 + th / 2 + .02, cz); snow.push(prepB(geo, new THREE.Color(0xf4f6f9))); }
+    const sm = new THREE.Mesh(mergeGeometries(snow), std({ vertexColors: true, roughness: .9 }, { noSnow: true })); sm.visible = false; g.add(sm); window.__ghSnow = sm; }
 }
 
 /* --- Ящик-навес у дома (фото 4, слева) --- */
@@ -938,6 +1037,119 @@ const HONEY = 1.0, DARKLOG = .66;
   logGable({ b: 'misc', cx, cz, w: 1.15, d: 1.3, wall: 'n', span: 1.15, y0: 1.07, rise: .75, r: .085, tint: .95 }); logGable({ b: 'misc', cx, cz, w: 1.15, d: 1.3, wall: 's', span: 1.15, y0: 1.07, rise: .75, r: .085, tint: .95 });
   gableRoof(g, { cx, cz, span: 1.15, len: 1.3, eaveY: 1.08, rise: .8, axis: 'z', ovS: .22, ovE: .18, matA: MAT.tile, matB: MAT.tile });
 }
+
+/* бетономешалка: оранжевый барабан на красной раме с колесом */
+function mixer(parent, mx, my, mz, ry = 0) {
+  const g = new THREE.Group(); g.position.set(mx, my, mz); g.rotation.y = ry; parent.add(g);
+  const orange = std({ color: 0xe8692a, roughness: .45, metalness: .2 }), redF = std({ color: 0xb02a22, roughness: .5, metalness: .4 });
+  const pts = [[.0, -.35], [.3, -.3], [.38, -.05], [.36, .15], [.22, .35], [.16, .42], [.0, .42]].map(([r_, y]) => new THREE.Vector2(Math.max(.01, r_), y));
+  const drum = new THREE.Mesh(new THREE.LatheGeometry(pts, 20), orange); drum.position.set(0, 1.0, 0); drum.rotation.z = .55; drum.castShadow = true; g.add(drum);
+  for (const s_ of [-1, 1]) beam(g, V3(s_ * .3, 0, -.3), V3(0, .95, 0), .05, .05, redF); beam(g, V3(0, 0, .4), V3(0, .95, 0), .05, .05, redF);
+  const w1 = cyl(g, .2, .08, -.35, .2, -.3, MAT.plinth, 14); w1.rotation.z = Math.PI / 2;
+  const wh = new THREE.Mesh(new THREE.TorusGeometry(.32, .025, 6, 24), redF); wh.position.set(.42, 1.0, 0); wh.rotation.y = Math.PI / 2; g.add(wh);
+  box(g, .25, .35, .18, -.25, .75, .2, MAT.iron);
+  return g;
+}
+/* --- Дровник у южного забора (фото 10, 13, 15–20): открытый сруб из оцилиндрованного бревна, белые торцы на углах и у каждой перегородки,
+   широкие проёмы во двор и к забору, дощатый пол на высоте трёх брёвен, четырёхскатная вальмовая кровля из металлочерепицы --- */
+{
+  const g = bld('canopy2', 'Дровник', 'открытый сруб у южного забора', 10.0, 13.8, 7.5, 3.4); NOW.push(g);
+  const x0 = 4.0, x1 = 16.0, z0 = 12.3, z1 = 15.3, y0 = .1, eave = 2.4, r = .12, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+  const parts = [7.2, 10.0, 12.9];
+  const front = [[4.32, 6.88], [7.52, 9.68], [10.32, 12.58], [13.22, 15.68]], back = [[4.4, 6.8], [7.6, 9.6], [10.4, 12.5], [13.3, 15.6]];
+  const oy0 = y0 + .5, oy1 = eave - .22;
+  FOOT.push([x0 - .4, z0 - .4, x1 + .4, z1 + .4]);
+  logBox({ b: 'canopy2', cx, cz, w: x1 - x0, d: z1 - z0, y0, h: eave - y0, r, p: .26, tint: .95, parts: { x: parts },
+    gaps: (wall, y) => wall === 'n' && y > oy0 && y < oy1 ? front : wall === 's' && y > oy0 && y < oy1 ? back : [] });
+  const s = 2 * r * .86;
+  for (const xp of parts) for (let y = y0 + r + s / 2; y + r < eave - .1; y += s) addLog('canopy2', z0, z1, y, xp, 'z', r, .9);
+  /* обвязка поверху, бетонные блоки под углами, пол из досок */
+  for (const zz of [z0, z1]) beam(g, V3(x0 - .1, eave - .14, zz), V3(x1 + .1, eave - .14, zz), .2, .12, MAT.wood);
+  for (const xx of [x0, ...parts, x1]) for (const zz of [z0, z1]) box(g, .4, .14, .3, xx, .05, zz, MAT.concrete);
+  const floorM = std({ map: TX.planks, color: 0xe2c89c, roughness: .85 });
+  box(g, x1 - x0 - .2, .05, z1 - z0 - .2, cx, .66, cz, floorM);
+  /* кровля: четырёхскатная вальмовая (фото 11, 19, 20): два длинных ската и две вальмы одного уклона сходятся по рёбрам, свес 0,5 м со всех сторон, карнизная доска по всему периметру */
+  { const ov = .5, sl = .85 / ((z1 - z0) / 2), hx0 = x0 - ov, hx1 = x1 + ov, hz0 = z0 - ov, hz1 = z1 + ov, ey = eave + .14 - ov * sl, hd = (hz1 - hz0) / 2, ry = ey + hd * sl, zc = cz, rx0 = hx0 + hd, rx1 = hx1 - hd;
+    const c00 = V3(hx0, ey, hz0), c10 = V3(hx1, ey, hz0), c11 = V3(hx1, ey, hz1), c01 = V3(hx0, ey, hz1), r0 = V3(rx0, ry, zc), r1 = V3(rx1, ry, zc);
+    roofPoly(g, [c00, c10, r1, r0], MAT.tile); roofPoly(g, [c11, c01, r0, r1], MAT.tile);
+    roofPoly(g, [c01, c00, r0], MAT.tile); roofPoly(g, [c10, c11, r1], MAT.tile);
+    beam(g, V3(rx0 - .04, ry + .03, zc), V3(rx1 + .04, ry + .03, zc), .2, .07, MAT.trim);
+    for (const [c, r] of [[c00, r0], [c01, r0], [c10, r1], [c11, r1]]) beam(g, c.clone().setY(ey + .03), r.clone().setY(ry + .03), .14, .06, MAT.trim);
+    const fasc = std({ color: 0xc9a072, roughness: .8 });
+    for (const [a_, b_] of [[c00, c10], [c10, c11], [c11, c01], [c01, c00]]) { beam(g, V3(a_.x, ey - .09, a_.z), V3(b_.x, ey - .09, b_.z), .04, .18, fasc); beam(g, V3(a_.x, ey + .005, a_.z), V3(b_.x, ey + .005, b_.z), .05, .03, MAT.trim); }
+    /* подшивка снизу и стропила под свесом со всех сторон */
+    for (let x = x0 + .3; x < x1; x += .9) for (const [zz, ze] of [[z0, hz0], [z1, hz1]]) beam(g, V3(x, eave + .04, zz), V3(x, ey - .1, ze), .05, .1, MAT.woodRaw);
+    for (let z = z0 + .4; z < z1; z += .9) for (const [xx, xe] of [[x0, hx0], [x1, hx1]]) beam(g, V3(xx, eave + .04, z), V3(xe, ey - .1, z), .05, .1, MAT.woodRaw);
+  }
+  /* содержимое: у бани — дрова до потолка и доски, в середине — доски стоймя и штабель, у дома — лавка и бетономешалка */
+  const fwC = cvs(256, 256), fg_ = fwC.getContext('2d'); fg_.fillStyle = '#3b2b1d'; fg_.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 330; i++) { const x = rr(0, 256), y = rr(0, 256), rad = rr(8, 15), v = rr(.72, 1.12); fg_.fillStyle = rgb(206 * v, 158 * v, 100 * v); fg_.beginPath(); fg_.ellipse(x, y, rad, rad * rr(.75, 1), rr(0, 3), 0, 7); fg_.fill(); fg_.strokeStyle = 'rgba(130,86,44,.45)'; fg_.beginPath(); fg_.arc(x, y, rad * .45, 0, 7); fg_.stroke(); }
+  const fwT = ctex(fwC); fwT.repeat.set(1.6, 1.6);
+  const fwEnd = std({ map: fwT, roughness: .9 }), fwSide = std({ color: 0x6e5238, roughness: .95 });
+  const stack = (xa, xb, za, zb, h) => { const m = new THREE.Mesh(new THREE.BoxGeometry(xb - xa, h, zb - za), [fwSide, fwSide, fwSide, fwSide, fwEnd, fwEnd]); m.position.set((xa + xb) / 2, .69 + h / 2, (za + zb) / 2); m.castShadow = m.receiveShadow = true; g.add(m); };
+  stack(13.1, 15.75, z0 + .3, z1 - .3, eave - .75); stack(10.2, 11.7, z0 + .35, z1 - .3, 1.45);
+  const boardM = std({ color: 0xe0bf86, roughness: .8 });
+  for (let i = 0; i < 9; i++) { const x = 11.85 + i * .11, m = box(g, .03, 1.9, .2, x, .69 + .95, z1 - .5 + rr(-.1, .1), boardM); m.rotation.z = -.12 + rr(-.04, .04); }
+  for (let i = 0; i < 12; i++) { const x = 7.5 + i * .2, m = box(g, .04, 1.95, .22, x, .69 + .95, z1 - .55, rnd() < .5 ? boardM : MAT.woodRaw); m.rotation.z = .1 + rr(-.04, .04); }
+  for (let l = 0; l < 5; l++) box(g, 2.4, .05, .9, 8.7 + rr(-.1, .1), .72 + l * .055, z0 + .9, l % 2 ? boardM : MAT.woodRaw, rr(-.03, .03));
+  box(g, 2.0, .06, .4, 6.0, 1.15, z1 - .55, MAT.wood); for (const dx of [-.8, .8]) box(g, .08, .45, .35, 6.0 + dx, .9, z1 - .55, MAT.wood);
+  mixer(g, 4.9, .69, z0 + 1.0, .5);
+}
+
+/* --- грядки с туями (фото 10, 15–17): бордюр «пилой» из кирпича, поставленного на ребро наискосок, со стороны газона; серый бетонный поребрик у плитки --- */
+const seasonal = { notWinter: [], winterOnly: [] };
+{ const g = new THREE.Group(); scene.add(g);
+  const runs = [[W(962, 536), W(1067, 536)], [W(1103, 532), W(1222, 532)], [W(1222, 532), W(1250, 556)]];
+  const pts = []; for (const [[ax, az], [bx, bz]] of runs) { const L = Math.hypot(bx - ax, bz - az), n = Math.round(L / .19); for (let k = 0; k <= n; k++) pts.push([lerp(ax, bx, k / n), lerp(az, bz, k / n), Math.atan2(bz - az, bx - ax)]); }
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(.25, .12, .065), std({ color: 0xffffff, roughness: .85 }, { snowLo: .3, snowHi: .6 }), pts.length); const col = new THREE.Color(), e = new THREE.Euler();
+  pts.forEach(([x, z, a], i) => { e.set(0, -a, Math.PI / 4, 'YXZ'); tmpQ.setFromEuler(e); tmpM.compose(V3(x, .02, z), tmpQ, V3(1, 1, 1)); im.setMatrixAt(i, tmpM); col.setHSL(rr(.0, .03), rr(.4, .55), rr(.36, .46)); im.setColorAt(i, col); });
+  im.castShadow = im.receiveShadow = true; g.add(im);
+  for (const [[ax, az], [bx, bz]] of [[W(962, 506), W(1067, 506)], [W(1103, 506), W(1222, 506)]]) beam(g, V3(ax, .07, az), V3(bx, .07, bz), .1, .14, MAT.curb); }
+
+/* --- прудик у дорожки на краю газона с молодыми яблонями (фото 11, 12): синий пластиковый бортик, тёмная вода, валуны и высокая трава --- */
+{ const g = new THREE.Group(); scene.add(g); const px = -4.2, pz = -3.45, A = 1.05, B = .62;
+  const water = new THREE.Mesh(new THREE.CircleGeometry(1, 32), std({ color: 0x3a3022, roughness: .04, metalness: .2, envMapIntensity: .7 }, { noSnow: true })); water.rotation.x = -Math.PI / 2; water.scale.set(A, B, 1); water.position.set(px, .03, pz); g.add(water); window.__pondWater = water;
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1, .055, 8, 40), std({ color: 0x1f4fb8, roughness: .35 }, { noSnow: true })); rim.rotation.x = Math.PI / 2; rim.scale.set(A + .03, B + .03, 1); rim.position.set(px, .05, pz); rim.castShadow = true; g.add(rim);
+  const rockM = std({ color: 0xffffff, roughness: .85 }); const rocks = []; _seed = 4242;
+  for (let i = 0; i < 17; i++) { const a = -2.9 + i / 16 * 3.6 + rr(-.08, .08), k = rr(1.12, 1.3); const s = rr(.1, .2); const geo = new THREE.IcosahedronGeometry(1, 1); const p = geo.attributes.position; for (let j = 0; j < p.count; j++) { const f = 1 + (vnoise(p.getX(j) * 2 + i, p.getY(j) * 2 + p.getZ(j)) - .5) * .5; p.setXYZ(j, p.getX(j) * f, p.getY(j) * f, p.getZ(j) * f); } geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, rockM.clone()); m.material.color.setHSL(rnd() < .4 ? rr(.0, .05) : .1, rnd() < .4 ? .16 : .03, rr(.42, .6)); m.scale.set(s * 1.2, s * .75, s); m.position.set(px + Math.cos(a) * A * k, s * .35, pz + Math.sin(a) * B * k); m.rotation.y = rr(0, 3); m.castShadow = m.receiveShadow = true; g.add(m); }
+  /* высокая трава вокруг */
+  const blades = []; for (let i = 0; i < 70; i++) { const a = rr(-3.1, .9), k = rr(1.05, 1.5), bx = px + Math.cos(a) * A * k, bz = pz + Math.sin(a) * B * k, h = rr(.3, .75); const geo = new THREE.ConeGeometry(.012, h, 3); geo.translate(0, h / 2, 0); geo.rotateZ(rr(-.35, .35)); geo.rotateX(rr(-.35, .35)); geo.translate(bx, 0, bz); blades.push(prepB(geo, new THREE.Color().setHSL(rr(.2, .27), .5, rr(.26, .36)))); }
+  const tg = new THREE.Mesh(mergeGeometries(blades), std({ vertexColors: true, roughness: .8 }, { sway: .12, swayBase: 0, noSnow: true })); g.add(tg); seasonal.notWinter.push(tg);
+  FOOT.push([px - A - .35, pz - B - .3, px + A + .35, pz + B + .3]); }
+function prepB(g, c) { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k); const n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; }
+
+/* --- газонокосилка Patriot у края дорожки (фото 11, 12) --- */
+{ const g = new THREE.Group(); g.position.set(-6.0, 0, -4.7); g.rotation.y = 2.5; scene.add(g); seasonal.notWinter.push(g);
+  const blk = std({ color: 0x1c1d1f, roughness: .55 }), org = std({ color: 0xf0661e, roughness: .4 });
+  const deck = new THREE.Mesh(new RoundedBoxGeometry(.56, .2, .6, 3, .06), blk); deck.position.set(0, .2, .1); deck.castShadow = true; g.add(deck);
+  const bag = new THREE.Mesh(new RoundedBoxGeometry(.44, .3, .38, 3, .06), blk); bag.position.set(0, .36, -.32); bag.castShadow = true; g.add(bag);
+  const eng = new THREE.Mesh(new RoundedBoxGeometry(.3, .18, .3, 3, .07), org); eng.position.set(0, .38, .15); eng.castShadow = true; g.add(eng);
+  box(g, .5, .04, .1, 0, .31, .42, org);
+  for (const [wx, wz, wr] of [[-.3, .32, .1], [.3, .32, .1], [-.3, -.18, .12], [.3, -.18, .12]]) { const w_ = cyl(g, wr, .05, wx, wr, wz, org, 16); w_.rotation.z = Math.PI / 2; const t_ = cyl(g, wr * .55, .06, wx, wr, wz, blk, 12); t_.rotation.z = Math.PI / 2; }
+  for (const s_ of [-1, 1]) beam(g, V3(s_ * .2, .3, -.35), V3(s_ * .22, .95, -.85), .025, .025, blk); beam(g, V3(-.22, .95, -.85), V3(.22, .95, -.85), .03, .03, blk); beam(g, V3(-.18, .9, -.8), V3(.18, .9, -.8), .02, .02, org); }
+
+/* --- приподнятая грядка в бетонном бортике с ёлочками (фото 5, 25): высота около 0,5 м, скруглённые углы --- */
+{ const [x0, z0] = W(958, 150), [x1, z1] = W(1032, 425); const hgt = .5, th = .2, rc = .85;
+  const rr2 = (a0, b0, a1, b1, rad) => { const s = new THREE.Shape(); s.moveTo(a0 + rad, b0); s.lineTo(a1 - rad, b0); s.absarc(a1 - rad, b0 + rad, rad, -Math.PI / 2, 0, false); s.lineTo(a1, b1 - rad); s.absarc(a1 - rad, b1 - rad, rad, 0, Math.PI / 2, false); s.lineTo(a0 + rad, b1); s.absarc(a0 + rad, b1 - rad, rad, Math.PI / 2, Math.PI, false); s.lineTo(a0, b0 + rad); s.absarc(a0 + rad, b0 + rad, rad, Math.PI, Math.PI * 1.5, false); return s; };
+  const outer = rr2(x0, -z1, x1, -z0, rc), inner = rr2(x0 + th, -z1 + th, x1 - th, -z0 - th, rc - th); outer.holes.push(new THREE.Path(inner.getPoints(12).reverse()));
+  const geo = new THREE.ExtrudeGeometry(outer, { depth: hgt, bevelEnabled: true, bevelSize: .02, bevelThickness: .02, bevelSegments: 1, curveSegments: 12 }); geo.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(geo, std({ color: 0x9d9b95, roughness: .92 }, { snowLo: .6, snowHi: .8 })); m.castShadow = m.receiveShadow = true; scene.add(m);
+  const soil = new THREE.Mesh(new THREE.ShapeGeometry(inner), std({ color: 0x5e4330, roughness: 1 })); soil.rotation.x = -Math.PI / 2; soil.position.y = .36; soil.receiveShadow = true; scene.add(soil);
+  FOOT.push([x0, z0, x1, z1]); }
+
+/* --- огород перед навесом (фото 28, 29): деревянные короба-грядки, на двух — металлические дуги, колышки по углам --- */
+const BEDS = [[15.4, -8.7], [18.4, -8.7], [15.4, -6.5], [18.4, -6.5], [15.4, -4.3], [18.4, -4.3], [21.5, -4.6], [15.4, -2.3], [18.4, -2.3], [21.5, -2.3]];
+{ const g = new THREE.Group(); scene.add(g); const fr = std({ color: 0x9a6a42, roughness: .85 }), soilM = std({ color: 0x4a3626, roughness: 1 }), hoopM = std({ color: 0xb9bec4, roughness: .35, metalness: .7 });
+  const bw = 2.2, bd = 1.2, bh = .2;
+  BEDS.forEach(([x, z], i) => {
+    for (const s_ of [-1, 1]) { box(g, bw, bh, .05, x, bh / 2, z + s_ * bd / 2, fr); box(g, .05, bh, bd, x + s_ * bw / 2, bh / 2, z, fr); }
+    const so = box(g, bw - .06, .16, bd - .06, x, .08, z, soilM, 0, false);
+    if (i === 2 || i === 3) { for (const dx of [-.8, 0, .8]) { const h = new THREE.Mesh(new THREE.TorusGeometry(.5, .012, 6, 20, Math.PI), hoopM); h.position.set(x + dx, .18, z); h.rotation.y = Math.PI / 2; h.castShadow = true; g.add(h); } beam(g, V3(x - .85, .69, z), V3(x + .85, .69, z), .02, .02, hoopM); }
+    else if (i % 3 !== 2) for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(g, .03, .5, .03, x + sx * (bw / 2 - .04), .25, z + sz * (bd / 2 - .04), MAT.woodOld);
+    FOOT.push([x - bw / 2, z - bd / 2, x + bw / 2, z + bd / 2]); });
+  /* грядка из кирпича у теплицы (фото 29) */
+  for (let k = 0; k < 8; k++) box(g, .25, .12, .12, 20.2 + k * .26, .06, -6.3, MAT.blockRed); }
 
 flushLogs();
 
@@ -996,8 +1208,18 @@ neighbourHouse(-48, -6, 7, 8, 'x', 0x8a6040, roofDark, 3.0);
 const roofGreen = std({ map: TX.corrGrey, normalMap: TX.corrN, color: 0x4f9a6a, roughness: .4, metalness: .4, side: THREE.DoubleSide });
 neighbourHouse(-47, 12, 6, 6, 'z', 0x6f7c88, roofGreen, 2.8);
 neighbourHouse(-44, 3, 4, 5, 'x', 0x8a6a50, roofGreen, 2.4);
-neighbourHouse(-6, 30, 8, 7, 'x', 0x8b5a3a, roofDark, 3.0);
-neighbourHouse(16, 27, 7, 7, 'x', 0x7f8f8a, roofGreen, 4.2);
+/* за южным забором (фото 16, 19, 27): тёмно-зелёный двухэтажный дом и серо-голубой дом с белой отделкой, оба фронтоном к участку */
+function southHouse(cx, cz, w, d, h, wallCol, trimCol, roofMat, rise) {
+  const g = new THREE.Group(); scene.add(g); const bt = TX.planks.clone(); bt.needsUpdate = true; bt.repeat.set(w / 1.2, h / 2); bt.rotation = Math.PI / 2;
+  const wm = std({ map: bt, color: wallCol, roughness: .8 }); box(g, w, h, d, cx, h / 2, cz, wm);
+  const tg = new THREE.BufferGeometry(); const zf = cz - d / 2 - .01, zb = cz + d / 2 + .01; tg.setAttribute('position', new THREE.Float32BufferAttribute([cx - w / 2, h, zf, cx + w / 2, h, zf, cx, h + rise, zf, cx + w / 2, h, zb, cx - w / 2, h, zb, cx, h + rise, zb], 3)); tg.computeVertexNormals(); g.add(new THREE.Mesh(tg, std({ color: wallCol, roughness: .8, side: THREE.DoubleSide })));
+  gableRoof(g, { cx, cz, span: w, len: d, eaveY: h, rise, axis: 'z', ovS: .45, ovE: .45, matA: roofMat, matB: roofMat, fascia: std({ color: trimCol, roughness: .6 }), fasciaW: .25 });
+  const tm = std({ color: trimCol, roughness: .6 }); for (const s_ of [-1, 1]) box(g, .12, h, .12, cx + s_ * (w / 2 - .02), h / 2, zf - .03, tm);
+  return { g, zf };
+}
+{ const gH = southHouse(13.5, 27, 6.5, 8, 5.6, 0x24524a, 0x24524a, roofDark, 2.3); for (const [x, y] of [[12.0, 1.4], [15.0, 1.4], [13.5, 4.3]]) windowAt(gH.g, x, y, gH.zf - .05, '-z', .9, 1.0);
+  const bH = southHouse(1.5, 28, 7.5, 9, 3.4, 0xa8bdd0, 0xf4f4f0, roofDark, 2.6); for (const [x, y] of [[-.3, 1.5], [1.5, 1.5], [3.3, 1.5], [1.5, 4.4]]) windowAt(bH.g, x, y, bH.zf - .05, '-z', .8, 1.0); }
+
 neighbourHouse(8, -36, 8, 7, 'x', 0xb88a5a, roofDark, 3.0);
 neighbourHouse(32, 27, 7, 6, 'x', 0x6b4a36, roofDark, 2.8);
 /* соседская теплица и сарай за синим забором */
@@ -1100,7 +1322,13 @@ function spiraea(x, z, r) {
   }
   for (const [fx, fy, fz] of fl) FLORETS.push(fx, fy, fz);
 }
-function thuja(x, z, h) { const pts = []; for (let i = 0; i <= 10; i++) { const t = i / 10; pts.push(new THREE.Vector2(Math.max(.01, Math.sin(Math.min(1, t * 1.15) * Math.PI) * h * .2 * (1 - t * .55)), t * h)); } const g = new THREE.LatheGeometry(pts, 10); const p = g.attributes.position; for (let k = 0; k < p.count; k++) { const f = 1 + (vnoise(p.getX(k) * 9 + x, p.getY(k) * 9 + z) - .5) * .35; p.setX(k, p.getX(k) * f); p.setZ(k, p.getZ(k) * f); } g.computeVertexNormals(); g.translate(x, 0, z); GEO.thuja.push(prep(g, new THREE.Color().setHSL(rr(.28, .32), .5, rr(.16, .21)))); }
+function thuja(x, z, h) { /* туя «Смарагд»: узкий пушистый конус, шире всего в нижней трети, высота ≈ 3,7 ширины; гладкое ядро + много мелких пучков по поверхности, светлые жёлто-зелёные кончики сверху */
+  const R0 = h / 7.4, hue = rr(.24, .28), env = t => t < .28 ? .8 + t / .28 * .2 : Math.pow(Math.max(0, 1 - (t - .28) / .72), .9);
+  const pts = []; for (let i = 0; i <= 12; i++) { const t = i / 12; pts.push(new THREE.Vector2(Math.max(.01, R0 * env(t) * .82), .05 + t * h * .97)); }
+  const core = new THREE.LatheGeometry(pts, 10); core.translate(x, 0, z); GEO.thuja.push(prep(core, new THREE.Color().setHSL(hue + .01, .48, .17)));
+  const N = Math.round(75 * h / 1.8);
+  for (let k = 0; k < N; k++) { const t = Math.pow(rnd(), 1.15) * .94, a = rr(0, 6.28), e = env(t), rad = R0 * e * rr(.76, .95), sz = R0 * (.17 + .15 * e) * rr(.8, 1.15);
+    blob(GEO.thuja, x + Math.cos(a) * rad, .08 + t * h, z + Math.sin(a) * rad, sz, sz * 1.25, sz, new THREE.Color().setHSL(hue + t * .03 + rr(-.01, .01), .5 + t * .12, .19 + t * .1 + rr(-.02, .03)), 1, .4); } }
 
 /* участок */
 _seed = 9001;
@@ -1118,19 +1346,28 @@ for (const [px, py] of [[600, 22], [680, 26], [770, 18], [1020, 18], [1100, 12],
 for (const [px, py, r] of [[893, 395, .9], [893, 228, .8]]) { const [x, z] = P2(px, py); shrub(x, z, r, new THREE.Color(0x3f6e2a), { n: 34, arr: GEO.hydr, s: .17, col: C(0xf3f1e6) }); }
 for (const [px, py] of [[900, 300], [905, 340], [880, 270], [900, 160], [890, 120]]) { const [x, z] = P2(px, py); shrub(x, z, rr(.45, .7), new THREE.Color(0x3d6a2c), { n: 12, arr: GEO.flowerW, s: .07, col: C(rnd() < .5 ? 0xd9566e : 0xf0a0b0) }); }
 /* ели-саженцы в приподнятой грядке (фото 5) и туи в ступенчатых полосах */
-for (let py = 170; py < 410; py += 30) for (const px of [978, 1008]) { const [x, z] = P2(px + rr(-3, 3), py + rr(-3, 3) + (px > 990 ? 15 : 0)); sapling(x, z + 0, rr(.8, 1.05)); }
-for (let px = 970; px < 1062; px += 16) { const [x, z] = P2(px, 520); thuja(x, z, rr(1.5, 1.9)); }
+for (let py = 170; py < 410; py += 30) for (const px of [978, 1008]) { const [x, z] = P2(px + rr(-3, 3), py + rr(-3, 3) + (px > 990 ? 15 : 0)); const h = rr(.8, 1.05); if (z > -5.8) continue; sapling(x, z + 0, h); }
+for (let px = 970; px < 1062; px += 16) { const [x, z] = P2(px, 520); thuja(x, z, rr(1.6, 2.0)); }
 for (const [px, py] of [[1110, 512], [1135, 512], [1160, 512], [1185, 512], [1210, 512], [1236, 528], [1266, 552], [1268, 578], [1268, 602]]) { const [x, z] = P2(px, py); thuja(x, z, rr(1.5, 2.0)); }
+/* белая сирень у южного торца приподнятой грядки, рядом с навесом (фото 23): листва — общая, метёлки — весной и летом, зимой голые ветки */
+GEO.lilacF = [];
+{ const lx = 4.0, lz = -4.35;
+  for (let b = 0; b < 16; b++) { const a = rr(0, 6.28), rch = rr(.5, 1.1), up = rr(1.6, 2.6); const p0 = V3(lx + rr(-.12, .12), 0, lz + rr(-.12, .12)), p1 = V3(lx + Math.cos(a) * rch * .5, up * .55, lz + Math.sin(a) * rch * .5), p2 = V3(lx + Math.cos(a) * rch, up, lz + Math.sin(a) * rch);
+    trunkSeg(GEO.trunk, p0, p1, .022, .016, C(0x8a7e72)); trunkSeg(GEO.branch, p1, p2, .014, .004, C(0x5a5048)); for (let k = 0; k < 3; k++) { const q0 = p1.clone().lerp(p2, rr(.3, .8)), b2 = rr(0, 6.28); trunkSeg(GEO.branch, q0, q0.clone().add(V3(Math.cos(b2) * .35, rr(.2, .5), Math.sin(b2) * .35)), .007, .002, C(0x5a5048)); } }
+  crown(GEO.leaf, lx, 1.5, lz, 1.2, 1.05, 1.1, new THREE.Color(0x3f6c2c), 110, .27);
+  for (let i = 0; i < 300; i++) { const u = rr(-.45, 1), a = rr(0, 6.28), sr = Math.sqrt(1 - u * u), k = rr(.95, 1.1); const x = lx + Math.cos(a) * sr * 1.2 * k, y = 1.55 + u * 1.0 * k, z = lz + Math.sin(a) * sr * 1.1 * k, h = rr(.13, .2);
+    const geo = new THREE.IcosahedronGeometry(1, 1); const p = geo.attributes.position; for (let j = 0; j < p.count; j++) { const yy = p.getY(j), f = (1 + (vnoise(p.getX(j) * 6 + i, yy * 6 + p.getZ(j) * 4) - .5) * .6) * (1 - Math.max(0, yy) * .45); p.setXYZ(j, p.getX(j) * f * h * .7, yy * h, p.getZ(j) * f * h * .7); }
+    geo.computeVertexNormals(); geo.rotateZ(-Math.cos(a) * sr * .45); geo.rotateX(Math.sin(a) * sr * .45); geo.translate(x, y + .06, z); GEO.lilacF.push(prep(geo, new THREE.Color().setHSL(rr(.12, .16), rr(.15, .4), rr(.88, .96)))); } }
 /* избушка: две большие спиреи */
 spiraea(-18.0, -13.9, 1.15); spiraea(-13.8, -13.9, 1.15);
 /* спиреи по краям дорожек, в саду и у дома (видео, весна) */
-for (const [px, py, r] of [[500, 300, .9], [560, 398, .9], [760, 426, .95], [558, 250, .8], [300, 290, 1.05], [455, 245, 1.0], [385, 330, .9], [525, 505, .9], [868, 418, .8]]) { const [x, z] = P2(px, py); spiraea(x, z, r); }
+for (const [px, py, r] of [[500, 300, .9], [560, 398, .9], [728, 430, .95], [558, 250, .8], [300, 290, 1.05], [455, 245, 1.0], [385, 330, .9], [525, 505, .9], [868, 418, .8]]) { const [x, z] = P2(px, py); spiraea(x, z, r); }
 /* клумбы с жёлтыми цветами вдоль дорожки к избушке и по краю сада */
 function flowerStrip(x0, z0, x1, z1, wdt, n) { for (let i = 0; i < n; i++) { const t = rnd(), x = lerp(x0, x1, t) + rr(-wdt, wdt), z = lerp(z0, z1, t) + rr(-wdt, wdt); blob(GEO.leaf, x, .14, z, rr(.18, .3), rr(.12, .2), rr(.18, .3), new THREE.Color().setHSL(.25, .55, rr(.24, .3)), 1, .3); for (let k = 0; k < 9; k++) GEO.yellow.push([x + rr(-.3, .3), rr(.2, .45), z + rr(-.3, .3)]); } }
 { const a = P2(472, 175), b = P2(468, 390), c = P2(553, 165), d = P2(553, 400); flowerStrip(a[0], a[1], b[0], b[1], .35, 80); flowerStrip(c[0], c[1], d[0], d[1], .25, 55);
   const e = P2(410, 415), f = P2(490, 415); flowerStrip(e[0], e[1], f[0], f[1], .3, 30); }
 /* огород: смородина и пр. */
-for (const [px, py] of [[1250, 110], [1300, 230], [1252, 340], [1360, 380], [1420, 400], [1470, 420], [1250, 440], [1520, 380], [1545, 440]]) { const [x, z] = P2(px, py); shrub(x, z, rr(.6, 1.1), new THREE.Color().setHSL(.27, .5, rr(.2, .28))); }
+for (const [px, py] of [[1250, 110], [1300, 230], [1252, 340], [1360, 380], [1420, 400], [1470, 420], [1250, 440], [1520, 380], [1545, 440]]) { const [x, z] = P2(px, py); if (BEDS.some(([bx, bz]) => Math.abs(x - bx) < 2.0 && Math.abs(z - bz) < 1.4)) continue; shrub(x, z, rr(.6, 1.1), new THREE.Color().setHSL(.27, .5, rr(.2, .28))); }
 /* юг: бурьян и кусты */
 for (let i = 0; i < 9; i++) { const [x, z] = P2(rr(420, 1300), rr(840, 905)); if (!occupied(x, z)) shrub(x, z, rr(.4, .9), new THREE.Color().setHSL(rr(.22, .28), .45, rr(.22, .3))); }
 /* лес и деревья вокруг */
@@ -1157,7 +1394,7 @@ const veg = {};
 function mergeTo(key, arr, mat, cast = true) { if (!arr.length) return; const m = new THREE.Mesh(mergeGeometries(arr), mat); m.castShadow = cast; m.receiveShadow = true; scene.add(m); veg[key] = m; }
 const appleLeafMat = std({ map: TX.leaf, vertexColors: true, roughness: .85 }, { sway: .016, swayBase: .8, snowLo: .5, snowHi: .8 });
 mergeTo('leaf', GEO.leaf, leafMat); mergeTo('appleLeaf', GEO.appleLeaf, appleLeafMat); mergeTo('con', GEO.conifer, conMat); mergeTo('trunk', GEO.trunk, trunkMat); mergeTo('birch', GEO.birch, birchMat); mergeTo('branch', GEO.branch, branchMat); mergeTo('thuja', GEO.thuja, thujaMat);
-mergeTo('flowerW', GEO.flowerW, flowerMat, false);
+mergeTo('flowerW', GEO.flowerW, flowerMat, false); mergeTo('lilac', GEO.lilacF, std({ vertexColors: true, roughness: .8, emissive: 0x1a1a18 }, { sway: .018, swayBase: .3, noSnow: true }));
 { const n = FLORETS.length / 3, im = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), std({ color: 0xf6f6f0, roughness: .9, emissive: 0x30302c }, { sway: .03, swayBase: .2, noSnow: true }), n); im.castShadow = true; im.userData.noAO = true; im.receiveShadow = true;
   for (let i = 0; i < n; i++) { const sc = rr(.011, .019); tmpM.compose(V3(FLORETS[i * 3], FLORETS[i * 3 + 1], FLORETS[i * 3 + 2]), tmpQ.setFromEuler(new THREE.Euler(rr(0, 3), rr(0, 3), 0)), V3(sc * 1.4, sc, sc * 1.4)); im.setMatrixAt(i, tmpM); }
   scene.add(im); veg.florets = im; } mergeTo('flowerY', GEO.flowerY, flowerMat, false); mergeTo('hydr', GEO.hydr, flowerMat, false);
@@ -1245,15 +1482,11 @@ const summerOnly = [];
 /* бетонные блоки и стопки у дома */
 for (const [px, py] of [[930, 560], [945, 575], [932, 590]]) { const [x, z] = W(px, py); summerOnly.push(box(props, .6, .3, .4, x, .15, z, MAT.concrete, rr(0, 1))); }
 OLD.push(...props.children.slice(_old0).filter(o => o !== window.__snowHeap));
-/* приподнятая грядка из бетонных блоков (фото 5) */
-{ const [x0, z0] = W(958, 150), [x1, z1] = W(1032, 425); const g = props; const hgt = .38;
-  for (const [a, b] of [[V3(x0, hgt / 2, z0), V3(x1, hgt / 2, z0)], [V3(x1, hgt / 2, z0), V3(x1, hgt / 2, z1)], [V3(x1, hgt / 2, z1), V3(x0, hgt / 2, z1)], [V3(x0, hgt / 2, z1), V3(x0, hgt / 2, z0)]]) beam(g, a, b, .2, hgt, MAT.concrete);
-  box(g, x1 - x0 - .2, .3, z1 - z0 - .2, (x0 + x1) / 2, .15, (z0 + z1) / 2, std({ color: 0x5e4330, roughness: 1 }), 0, false); }
 /* компостный ящик тёмно-коричневый у газона (фото 5 слева) */
 { const [x, z] = W(870, 175); box(props, 1.0, 1.0, 1.0, x - .4, .5, z, std({ color: 0x3b2a22, roughness: .7, metalness: .2 })); }
 /* шланг жёлтый через газон и зелёный на плитке у бани */
 function hose(pts, col) { const c = new THREE.CatmullRomCurve3(pts.map(([x, z]) => V3(x, .03, z))); const m = new THREE.Mesh(new THREE.TubeGeometry(c, 200, .018, 6), std({ color: col, roughness: .5 }, { noSnow: true })); m.castShadow = true; props.add(m); return m; }
-hose([[855, 160], [845, 200], [818, 260], [800, 330], [790, 380], [802, 412], [860, 425], [930, 432], [990, 450]].map(([a, b]) => W(a, b)), 0xe8c51a);
+hose([[855, 160], [845, 200], [818, 260], [800, 330], [790, 380], [778, 386], [830, 384], [878, 418], [930, 432], [990, 450]].map(([a, b]) => W(a, b)), 0xe8c51a);
 { const pts = []; const [cx_, cz_] = W(1045, 470); for (let i = 0; i < 40; i++) { const a = i * .5, r = .35 + i * .02; pts.push([cx_ + Math.cos(a) * r * 1.4, cz_ + Math.sin(a) * r]); } pts.push([cx_ + 2, cz_ + 1], [cx_ + 4, cz_ + .5]); hose(pts, 0x2f6b3a); }
 /* садовая тачка: корыто с завальцованным бортом, одно колесо на оси между трубами рамы, две ручки с рукоятками, две задние опоры */
 function makeWheelbarrow(parent, x, z, ry, o = {}) {
@@ -1303,48 +1536,61 @@ function makeWheelbarrow(parent, x, z, ry, o = {}) {
   const wheelbarrow = (x, z, ry) => makeWheelbarrow(springG, x, z, ry, { load: true });
   { const [x, z] = W(522, 392); wheelbarrow(x, z, -.4); }
   { const [x, z] = W(712, 448); wheelbarrow(x, z, 2.4); }
-  /* круглый каркасный бассейн за туями (видео 2) */
-  { const x = 9.0, z = 8.2, R = 2.25, H = 1.2;
-    const wall = new THREE.Mesh(new THREE.CylinderGeometry(R, R, H, 48, 1, true), std({ color: 0xdfe3e3, roughness: .55, side: THREE.DoubleSide })); wall.position.set(x, H / 2, z); wall.castShadow = wall.receiveShadow = true; nowG.add(wall);
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(R, .06, 8, 48), std({ color: 0xf2f4f4, roughness: .4 })); rim.rotation.x = Math.PI / 2; rim.position.set(x, H, z); nowG.add(rim);
-    const water = new THREE.Mesh(new THREE.CircleGeometry(R - .02, 48), std({ color: 0x2c6478, roughness: .08, metalness: 0, envMapIntensity: .6 }, { noSnow: true })); water.rotation.x = -Math.PI / 2; water.position.set(x, H - .15, z); water.receiveShadow = true; nowG.add(water);
-    /* зимой: лёд со снегом на воде и сугроб у основания */
+  /* каркасный бассейн Bestway Hydrium (фото 9, 16–20, 26, 27): круг из 16 стальных панелей, белые стойки, белый поручень с накладками на стыках, голубой лайнер, стальная лестница; стоит у восточного конца дровника, рядом с баней */
+  { const x = 12.6, z = 9.3, A = 2.3, B = 2.3, H = 1.2, N = 16; /* круглый, Ø 4,6 м */
+    const P = []; for (let i = 0; i < N; i++) { const a = (i + .5) / N * 6.2832, c = Math.cos(a), s = Math.sin(a); P.push([x + A * c, z + B * s]); }
+    const inset = (k) => P.map(([px, pz]) => [x + (px - x) * k, z + (pz - z) * k]);
+    const strip = (pts0, y0, y1, mat, out = false) => { const pts = out ? pts0.slice().reverse() : pts0; const pos = [], uv = []; let u = 0; for (let i = 0; i < N; i++) { const [ax, az] = pts[i], [bx, bz] = pts[(i + 1) % N], L = Math.hypot(bx - ax, bz - az); pos.push(ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y0, az, bx, y1, bz, ax, y1, az); uv.push(u, 0, u + L, 0, u + L, 1, u, 0, u + L, 1, u, 1); u += L; } const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.computeVertexNormals(); const m = new THREE.Mesh(g, mat); m.castShadow = m.receiveShadow = true; nowG.add(m); return m; };
+    const ribC = cvs(64, 8), rg = ribC.getContext('2d'); for (let i = 0; i < 64; i++) { const v = 236 + Math.sin(i / 64 * 6.2832 * 8) * 4; rg.fillStyle = rgb(v, v + 2, v + 2); rg.fillRect(i, 0, 1, 8); } const ribT = ctex(ribC); ribT.repeat.set(2.5, 1);
+    const panelM = std({ map: ribT, color: 0xf2f4f3, roughness: .5, metalness: .15, side: THREE.DoubleSide });
+    strip(P, .02, H - .03, panelM, true);
+    const linerM = std({ color: 0x3aa6d2, roughness: .45, side: THREE.DoubleSide }, { noSnow: true });
+    strip(inset(.985), .05, H - .02, linerM);
+    const postM = std({ color: 0xe9ecec, roughness: .45 }), capM = std({ color: 0xf7f8f8, roughness: .35 });
+    for (let i = 0; i < N; i++) { const [px, pz] = P[i], a = Math.atan2(pz - z, px - x);
+      const up = box(nowG, .07, H, .1, px + Math.cos(a) * .04, H / 2, pz + Math.sin(a) * .04, postM); up.rotation.y = -a;
+      const cap = box(nowG, .2, .07, .26, px + Math.cos(a) * .02, H + .025, pz + Math.sin(a) * .02, capM); cap.rotation.y = -a;
+      const [qx, qz] = P[(i + 1) % N], L = Math.hypot(qx - px, qz - pz), ra = Math.atan2(qz - pz, qx - px), nx = -(qz - pz) / L, nz = (qx - px) / L;
+      const rail = box(nowG, L, .035, .17, (px + qx) / 2 - nx * .03 * 0, H + .005, (pz + qz) / 2, capM); rail.rotation.y = -ra; }
+    const sh = new THREE.Shape(inset(.98).map(([px, pz]) => new THREE.Vector2(px, -pz)));
+    const water = new THREE.Mesh(new THREE.ShapeGeometry(sh), std({ color: 0x46b4cc, roughness: .06, metalness: 0, envMapIntensity: .5 }, { noSnow: true })); water.rotation.x = -Math.PI / 2; water.position.y = H - .2; water.receiveShadow = true; nowG.add(water); window.__poolWater = water;
+    const floorL = new THREE.Mesh(new THREE.ShapeGeometry(sh), linerM); floorL.rotation.x = -Math.PI / 2; floorL.position.y = .06; nowG.add(floorL);
+    /* наклейка Bestway Hydrium на северной стенке */
+    { const c = cvs(128, 64), lg = c.getContext('2d'); lg.fillStyle = '#f4f4f2'; lg.fillRect(0, 0, 128, 64); lg.strokeStyle = '#9aa0a6'; lg.strokeRect(1, 1, 126, 62); lg.fillStyle = '#5a6068'; lg.font = 'bold 26px Arial'; lg.fillText('Bestway', 12, 30); lg.font = 'italic 17px Arial'; lg.fillText('Hydrium', 30, 52);
+      const lb = new THREE.Mesh(new THREE.PlaneGeometry(.55, .28), std({ map: ctex(c, true, false), roughness: .6 }, { noSnow: true })); const [ax, az] = P[12], [bx, bz] = P[13]; const ra = Math.atan2(bz - az, bx - ax); lb.position.set((ax + bx) / 2 + Math.sin(ra) * .03, .8, (az + bz) / 2 - Math.cos(ra) * .03); lb.rotation.y = Math.PI - ra; nowG.add(lb); }
+    /* лестница-стремянка через борт с западного конца */
+    { const ladM = std({ color: 0xa9afb5, roughness: .45, metalness: .55 }); const lad = new THREE.Group(); lad.position.set(x - A - .02, 0, z + .35); nowG.add(lad);
+      for (const s_ of [-1, 1]) for (const dz of [-.24, .24]) { const c = new THREE.CatmullRomCurve3([V3(s_ * .55, 0, dz), V3(s_ * .4, .9, dz), V3(s_ * .2, H + .25, dz), V3(0, H + .42, dz)]); const t = new THREE.Mesh(new THREE.TubeGeometry(c, 16, .022, 8), ladM); t.castShadow = true; lad.add(t); }
+      for (const s_ of [-1, 1]) for (let k = 1; k <= 3; k++) { const y = k * .3, xx = s_ * (.55 - y / .9 * .15); box(lad, .14, .03, .46, xx, y, 0, std({ color: 0xb7bcc1, roughness: .5, metalness: .4 })); }
+      lad.rotation.y = 0; }
+    /* зимой: серый лёд, снег на поручне, сугроб вокруг */
     const winterG = new THREE.Group(); winterG.visible = false; nowG.add(winterG); window.__poolWinter = winterG;
-    const ice = new THREE.Mesh(new THREE.CircleGeometry(R - .03, 48), std({ color: 0xe8edf2, roughness: .6 }, { noSnow: true })); ice.rotation.x = -Math.PI / 2; ice.position.set(x, H - .12, z); ice.receiveShadow = true; winterG.add(ice);
-    const drift = new THREE.Mesh(new THREE.TorusGeometry(R + .25, .32, 10, 48), std({ color: 0xf2f5f8, roughness: .9 }, { noSnow: true })); drift.rotation.x = Math.PI / 2; drift.scale.set(1, 1, .7); drift.position.set(x, .05, z); drift.receiveShadow = true; winterG.add(drift);
-    const rimSnow = new THREE.Mesh(new THREE.TorusGeometry(R, .085, 8, 48), std({ color: 0xf6f8fb, roughness: .9 }, { noSnow: true })); rimSnow.rotation.x = Math.PI / 2; rimSnow.scale.set(1, 1, .6); rimSnow.position.set(x, H + .06, z); winterG.add(rimSnow);
-    for (let a = 0; a < 6.28; a += .52) { const m = new THREE.Mesh(new THREE.BoxGeometry(.06, H + .02, .06), std({ color: 0xbfc4c6, roughness: .5 })); m.position.set(x + Math.cos(a) * (R + .04), H / 2, z + Math.sin(a) * (R + .04)); nowG.add(m); }
-    const lad = new THREE.Group(); lad.position.set(x - R - .25, 0, z); nowG.add(lad); for (const dz of [-.25, .25]) beam(lad, V3(0, 0, dz), V3(.25, 1.35, dz), .04, .04, MAT.steel); for (let y = .3; y < 1.3; y += .3) beam(lad, V3(y / 1.35 * .25, y, -.25), V3(y / 1.35 * .25, y, .25), .03, .03, MAT.steel);
-    FOOT.push([x - R, z - R, x + R, z + R]); }
-  /* новый длинный навес вдоль южного забора (видео 2): открытые пролёты, столбы с белыми торцами, глухая задняя стена */
-  { const x0 = 5.5, x1 = 15.5, z0 = 12.5, z1 = 15.3, eave = 2.3, r = .12, sp = 2 * r * .86;
-    const logs = [], whites = [];
-    const lg = (a, b, y, fixed, axis, arr = logs, rad = r) => { const len = b - a, gg = new THREE.CylinderGeometry(rad, rad, len, 12, 1); if (axis === 'x') { gg.rotateZ(Math.PI / 2); gg.translate((a + b) / 2, y, fixed); } else { gg.rotateX(Math.PI / 2); gg.translate(fixed, y, (a + b) / 2); } arr.push(gg); };
-    for (let y = r + .1; y < eave - .05; y += sp) { lg(x0, x1, y, z1, 'x'); lg(z0, z1, y + sp / 2, x0, 'z'); lg(x0, x0 + 2.8, y, z0, 'x'); if (y < 2.0 && false) {} lg(z0, z1, y + sp / 2, x0 + 2.8, 'z'); }
-    for (const xp of [x0 + 2.8, x0 + 5.4, x0 + 8.0, x0 + 10.6, x0 + 13.2, x1]) { const c = new THREE.CylinderGeometry(.15, .15, eave, 12); c.translate(xp, eave / 2, z0); logs.push(c); for (let y = .12; y < eave; y += .22) lg(z0 - .28, z0 + .28, y, xp, 'z', whites, .125); }
-    for (let y = r + .1; y < eave - .05; y += sp) { lg(z1 - .25, z1 + .25, y + sp / 2, x0, 'z', whites, .125); lg(z1 - .25, z1 + .25, y + sp / 2, x1, 'z', whites, .125); }
-    const g = bld('canopy2', 'Навес', 'новый, у южного забора (по видео)', 7.5, 13.9, 8.5, 3.5); NOW.push(g);
-    const lm = new THREE.Mesh(mergeGeometries(logs.map(q => q.toNonIndexed())), MAT.log); lm.castShadow = lm.receiveShadow = true; g.add(lm);
-    const wm = new THREE.Mesh(mergeGeometries(whites.map(q => q.toNonIndexed())), MAT.white); wm.castShadow = true; g.add(wm);
-    beam(g, V3(x0, eave, z0), V3(x1 + .2, eave, z0), .22, .22, MAT.wood);
-    gableRoof(g, { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, span: z1 - z0, len: x1 - x0, eaveY: eave + .1, rise: 1.15, axis: 'x', ovS: .45, ovE: .4, matA: MAT.tile, matB: MAT.tile });
-    box(g, 1.8, .06, .8, 6.5, .75, 14.2, MAT.wood); for (const s_ of [-1, 1]) box(g, 1.8, .05, .3, 6.5, .45, 14.2 + s_ * .65, MAT.wood);
-    box(g, .9, 1.95, .06, x0 + 1.4, 1.0, z0 - .08, MAT.planks);
-    FOOT.push([x0 - .4, z0 - .4, x1 + .4, z1 + .4]); }
-  /* флаг России у крыльца бани (видео 1) */
-  { const px = 11.56, pz = -4.08; cyl(nowG, .035, 5.0, px, 3.7, pz, MAT.steel, 8); for (const y of [1.5, 2.2]) beam(nowG, V3(11.51, y, -3.72), V3(px, y, pz), .05, .05, MAT.iron);
+    const ice = new THREE.Mesh(new THREE.ShapeGeometry(sh), std({ color: 0xaab8c0, roughness: .55 }, { noSnow: true })); ice.rotation.x = -Math.PI / 2; ice.position.y = H - .22; ice.receiveShadow = true; winterG.add(ice);
+    const snowM = std({ color: 0xf2f5f8, roughness: .9 }, { noSnow: true });
+    for (let i = 0; i < N; i++) { const [px, pz] = P[i], [qx, qz] = P[(i + 1) % N], L = Math.hypot(qx - px, qz - pz); const sn = new THREE.Mesh(new RoundedBoxGeometry(L + .12, .1, .24, 2, .045), snowM); sn.position.set((px + qx) / 2, H + .07, (pz + qz) / 2); sn.rotation.y = -Math.atan2(qz - pz, qx - px); winterG.add(sn); }
+    for (const [dx, dz, s_] of [[-1.6, -.6, .35], [-1.2, -.75, .25], [1.3, .2, .3]]) { const b = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 6), snowM); b.scale.set(s_, s_ * .3, s_ * .6); b.position.set(x + dx, H - .2, z + dz); winterG.add(b); }
+    const drift = new THREE.Mesh(new THREE.TorusGeometry(1, .1, 10, 48), snowM); drift.rotation.x = Math.PI / 2; drift.scale.set(A + .38, B + .38, 2.4); drift.position.set(x, .02, z); drift.receiveShadow = true; winterG.add(drift);
+    /* чёрный тент скаткой у бассейна */
+    { const m = tarpHeap(x - 1.6, z + 2.15, 1.0, .55, .38, MAT.tarpBlack, 21); props.remove(m); nowG.add(m); }
+    FOOT.push([x - A - .3, z - B - .3, x + A + .3, z + B + .3]); }
+  /* флаги на угловом столбе навеса у сарая (фото 21, 23, 28): сверху — красное Знамя Победы, ниже и позади — триколор; зимой (фото 28) только триколор */
+  { const px = 11.56, pz = -4.08; cyl(nowG, .035, 5.2, px, 3.8, pz, MAT.steel, 8); for (const y of [1.5, 2.2]) beam(nowG, V3(11.51, y, -3.72), V3(px, y, pz), .05, .05, MAT.iron);
+    const mkFlag = (c, w, h, y, ry) => { const fg = new THREE.PlaneGeometry(w, h, 16, 10); fg.translate(w / 2, 0, 0); const fm = new THREE.Mesh(fg, std({ map: ctex(c, true, false), side: THREE.DoubleSide, roughness: .8 }, { noSnow: true })); fm.position.set(px + .03, y, pz); fm.rotation.y = ry; fm.castShadow = true; nowG.add(fm); fm.userData.base = fg.attributes.position.array.slice(); window.__flags.push(fm); return fm; };
+    window.__flags = [];
     const c = cvs(96, 64), gx = c.getContext('2d'); gx.fillStyle = '#fff'; gx.fillRect(0, 0, 96, 22); gx.fillStyle = '#1c3fa8'; gx.fillRect(0, 21, 96, 22); gx.fillStyle = '#d52b1e'; gx.fillRect(0, 42, 96, 22);
-    const fg = new THREE.PlaneGeometry(1.5, 1.0, 14, 8); fg.translate(.75, 0, 0); const fm = new THREE.Mesh(fg, std({ map: ctex(c, true, false), side: THREE.DoubleSide, roughness: .8 }, { noSnow: true })); fm.position.set(px + .03, 5.6, pz); fm.rotation.y = -Math.PI * .1; fm.castShadow = true; nowG.add(fm); window.__flag = fm; fm.userData.base = fg.attributes.position.array.slice(); }
+    window.__flagTri = mkFlag(c, 1.35, .9, 4.85, -Math.PI * .22);
+    const v = cvs(384, 256), vg = v.getContext('2d'); vg.fillStyle = '#c8161e'; vg.fillRect(0, 0, 384, 256); vg.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < 384; x += 6) vg.fillRect(x, 0, 2, 256);
+    vg.fillStyle = '#f4ece0'; vg.strokeStyle = '#f4ece0';
+    { const sx = 46, sy = 30, R = 15; vg.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, r_ = i % 2 ? R * .42 : R; vg.lineTo(sx + Math.cos(a) * r_, sy + Math.sin(a) * r_); } vg.closePath(); vg.fill(); }
+    vg.lineWidth = 6; vg.beginPath(); vg.arc(48, 80, 20, Math.PI * .1, Math.PI * 1.25); vg.stroke(); vg.lineWidth = 5; vg.beginPath(); vg.moveTo(34, 100); vg.lineTo(62, 64); vg.stroke(); vg.fillRect(54, 58, 16, 9);
+    vg.font = 'bold 25px Arial'; vg.textAlign = 'left'; vg.fillText('150 СТР. ОРДЕНА КУТУЗОВА', 98, 112); vg.fillText('II СТ. ИДРИЦК. ДИВ.', 128, 146); vg.fillText('79 С.К. 3 У.А. 1 Б.Ф.', 132, 180);
+    window.__flagRed = mkFlag(v, 1.75, 1.17, 5.62, -Math.PI * .08); seasonal.notWinter.push(window.__flagRed); }
   /* штабели поддонов у угла дома и мешки у веранды */
   { /* старые ступени: 4 поддона лесенкой к входу в северном торце веранды */ const pal = std({ color: 0x9c8f78, roughness: .9 }), palD = std({ color: 0x4a4036, roughness: 1 }); for (let k = 0; k < 4; k++) { const z = 1.43 - .45 - (3 - k) * .32, y = k * .15, x = -3.0; box(nowG, 1.2, .1, .95, x, y + .05, z, palD); for (let i = 0; i < 7; i++) box(nowG, .13, .025, .95, x - .54 + i * .18, y + .137, z, pal); for (const dx of [-.5, 0, .5]) box(nowG, .1, .1, .9, x + dx, y + .07, z, pal); }
     { const cb = std({ color: 0xc9a77a, roughness: .9 }); for (const [x, z, w_, h_] of [[-2.6, 8.0, .55, .45], [-2.7, 8.6, .5, .55], [-2.6, 10.3, .6, .5], [-2.9, 10.9, .45, .4]]) box(nowG, w_, h_, w_ * .8, x, .62 + h_ / 2, z, cb, rr(-.3, .3)); }
     const bagM = std({ color: 0xeceae4, roughness: .9 }); for (const [x, z] of [[-1.1, 5.0], [-0.7, 5.5], [-1.0, 6.9], [-0.5, 7.3]]) { const b = new THREE.Mesh(new RoundedBoxGeometry(.6, .28, .42, 3, .12), bagM); b.position.set(x, .14, z); b.rotation.y = rr(0, 3); b.castShadow = true; nowG.add(b); } }
-  /* под навесом сарая: бетономешалка, катушки кабеля, рулон, щиток, мешки (видео 2) */
-  { const orange = std({ color: 0xe8692a, roughness: .45, metalness: .2 }), redF = std({ color: 0xb02a22, roughness: .5, metalness: .4 });
-    const mx = 11.0, mz = -4.0; const pts = [[.0, -.35], [.3, -.3], [.38, -.05], [.36, .15], [.22, .35], [.16, .42], [.0, .42]].map(([r_, y]) => new THREE.Vector2(r_, y));
-    const drum = new THREE.Mesh(new THREE.LatheGeometry(pts.map(v => new THREE.Vector2(Math.max(.01, v.x), v.y)), 20), orange); drum.position.set(mx, 1.0, mz); drum.rotation.z = .55; drum.castShadow = true; nowG.add(drum);
-    for (const s_ of [-1, 1]) beam(nowG, V3(mx + s_ * .3, 0, mz - .3), V3(mx, .95, mz), .05, .05, redF); beam(nowG, V3(mx, 0, mz + .4), V3(mx, .95, mz), .05, .05, redF); const w1 = cyl(nowG, .2, .08, mx - .35, .2, mz - .3, MAT.plinth, 14); w1.rotation.z = Math.PI / 2;
-    box(nowG, .25, .35, .18, mx - .25, .75, mz + .2, MAT.iron);
+  /* под навесом сарая: катушки кабеля (бетономешалка теперь в дровнике, фото 10, 13), рулон, щиток, мешки (видео 2) */
+  {
     for (const [x, z, rr_] of [[8.0, -5.0, .35], [8.0, -4.2, .28]]) { const c1 = cyl(nowG, rr_ * .5, .45, x, rr_, z, std({ color: 0x2a2a2a, roughness: .6 }), 14); c1.rotation.x = Math.PI / 2; for (const dz of [-.24, .24]) { const d_ = cyl(nowG, rr_, .04, x, rr_, z + dz, MAT.woodRaw, 18); d_.rotation.x = Math.PI / 2; } }
     box(nowG, .9, .05, .4, 8.0, .8, -4.7, MAT.woodRaw); for (const dx of [-.4, .4]) { beam(nowG, V3(8.0 + dx, 0, -4.9), V3(8.0 + dx, .78, -4.7), .04, .04, MAT.woodRaw); beam(nowG, V3(8.0 + dx, 0, -4.5), V3(8.0 + dx, .78, -4.7), .04, .04, MAT.woodRaw); }
     const roll = cyl(nowG, .15, 1.3, 8.0, .98, -4.7, std({ color: 0xf2f2ee, roughness: .7 }), 16); roll.rotation.z = Math.PI / 2;
@@ -1352,10 +1598,10 @@ function makeWheelbarrow(parent, x, z, ry, o = {}) {
     for (const [x, z] of [[10.2, -5.6], [10.5, -5.9]]) { const b = new THREE.Mesh(new RoundedBoxGeometry(.5, .3, .7, 3, .1), std({ color: 0xc8b8a0, roughness: .9 })); b.position.set(x, .15, z); nowG.add(b); } }
 }
 /* лейка у огорода */
-{ const [x, z] = W(1300, 360); const m = cyl(props, .13, .3, x, .15, z, std({ color: 0x2e8a4a, roughness: .4 }), 14); const sp = new THREE.Mesh(new THREE.CylinderGeometry(.015, .03, .4, 6), m.material); sp.position.set(x + .2, .32, z); sp.rotation.z = -.9; props.add(sp); }
+{ const [x, z] = [16.9, -3.4]; const m = cyl(props, .13, .3, x, .15, z, std({ color: 0x2e8a4a, roughness: .4 }), 14); const sp = new THREE.Mesh(new THREE.CylinderGeometry(.015, .03, .4, 6), m.material); sp.position.set(x + .2, .32, z); sp.rotation.z = -.9; props.add(sp); }
 /* сушилка-рамка и синие бочки в огороде */
 { const [ax, az] = W(1235, 72), [bx, bz] = W(1330, 72); for (const [x, z] of [[ax, az], [bx, bz]]) { cyl(props, .03, 1.7, x, .85, z, MAT.steel, 6); beam(props, V3(x, 1.7, z - .5), V3(x, 1.7, z + .5), .03, .03, MAT.steel); } for (const dz of [-.45, -.15, .15, .45]) { const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([V3(ax, 1.68, az + dz), V3(bx, 1.62, bz + dz)]), new THREE.LineBasicMaterial({ color: 0xdddddd })); props.add(l); } }
-for (const [px, py] of [[1360, 220], [1375, 232]]) { const [x, z] = W(px, py); cyl(props, .3, .9, x, .45, z, std({ color: 0x1f4f9a, roughness: .4 }), 16); }
+for (const [px, py] of [[1350, 214], [1352, 232]]) { const [x, z] = W(px, py); cyl(props, .3, .9, x, .45, z, std({ color: 0x1f4f9a, roughness: .4 }), 16); }
 /* лестница на стену бани (длинная, у сруба) */
 { const [x, z] = W(1290, 700); beam(props, V3(x, .05, z), V3(x + .2, 3.0, z), .05, .05, MAT.woodOld); beam(props, V3(x, .05, z + .45), V3(x + .2, 3.0, z + .45), .05, .05, MAT.woodOld); }
 
@@ -1440,7 +1686,9 @@ function setSeason(s) {
   const spr = s === 'spring';
   veg.leaf.visible = !win; veg.appleLeaf.visible = !win && !spr; veg.branch.visible = win; veg.grass.visible = !win; veg.grassDug.visible = false; veg.dand.visible = spr || s === 'summer';
   for (const k of ['flowerW', 'flowerY', 'hydr']) veg[k].visible = s === 'summer';
-  veg.florets.visible = spr; veg.yellow.visible = spr || s === 'summer'; veg.blossom.visible = spr; veg.apples.visible = s === 'summer'; veg.fallen.visible = s === 'autumn';
+  veg.florets.visible = spr; veg.lilac.visible = spr || s === 'summer';
+  for (const o of seasonal.notWinter) o.visible = !win; if (window.__ghSnow) window.__ghSnow.visible = win; if (window.__ghPlants) window.__ghPlants.visible = !win; if (window.__flagTri) window.__flagTri.position.y = win ? 5.65 : 4.85; for (const o of seasonal.winterOnly) o.visible = win;
+  if (window.__pondWater) window.__pondWater.material.color.setHex(win ? 0xe2e8ee : 0x3a3022); if (window.__poolWater) window.__poolWater.visible = !win; veg.yellow.visible = spr || s === 'summer'; veg.blossom.visible = spr; veg.apples.visible = s === 'summer'; veg.fallen.visible = s === 'autumn';
   for (const o of NOW) o.visible = true; for (const o of OLD) o.visible = false; window.__springG.visible = spr; if (window.__poolWinter) window.__poolWinter.visible = win;
   for (const p of palletsRed) p.visible = false;
   if (window.__sticks) window.__sticks.visible = false;
@@ -1466,7 +1714,7 @@ function applyLight() {
   sun.shadow.radius = win || wet ? 8 : 3;
   scene.environment = n > .5 ? ENV.night : win || wet ? ENV.grey : ENV.day;
   setWet(wet);
-  MAT.glass.emissiveIntensity = smooth(.3, .9, n) * 1.6; MAT.lamp.emissiveIntensity = smooth(.3, .9, n) * 4; MAT.beacon.emissiveIntensity = .4 + n * 2;
+  MAT.glass.emissiveIntensity = smooth(.3, .9, n) * 1.6; if (window.__garland) window.__garland.emissiveIntensity = .25 + smooth(.3, .9, n) * 2.5; MAT.lamp.emissiveIntensity = smooth(.3, .9, n) * 4; MAT.beacon.emissiveIntensity = .4 + n * 2;
   for (const l of lights) l.intensity = smooth(.3, .9, n) * l.userData.k;
   renderer.toneMappingExposure = (+(q.get('exp') || 1)) * (win ? 1.05 : wet ? 1.1 : 1) * lerp(1, 1.25, n);
   if (gradePass) { gradePass.uniforms.sat.value = win || wet ? .92 : .96; gradePass.uniforms.warm.value = win || wet ? 0 : .012; }
@@ -1491,6 +1739,12 @@ const SHOTS = {
   house: { pos: [8.5, 1.6, 3.2], tgt: [-5.6, 3.0, 7.0], fov: 50, shadow: [20, -2, 6] },
   gazebo: { pos: [5.0, 1.7, 0.5], tgt: [1.5, 1.3, -16.6], fov: 26, shadow: [16, 3, -9] },
   shed: { pos: [-19.8, 1.6, 3.6], tgt: [-25.0, 1.5, 12.7], fov: 44, shadow: [14, -22, 10] },
+  drovnik: { pos: [5.4, 1.8, -3.4], tgt: [9.4, 1.0, 14.0], fov: 56, shadow: [20, 9, 8] },
+  pool: { pos: [7.6, 1.75, -1.4], tgt: [15.8, 0.9, 11.5], fov: 58, shadow: [20, 12, 6] },
+  pond: { pos: [-6.6, 1.6, -1.7], tgt: [-1.5, 0.0, -8.5], fov: 60, shadow: [14, -4, -5] },
+  beds: { pos: [22.5, 2.0, -0.6], tgt: [11.5, 0.8, -6.5], fov: 58, shadow: [18, 16, -6] },
+  lilac: { pos: [-1.0, 1.6, 1.6], tgt: [8.0, 3.0, -5.6], fov: 58, shadow: [16, 5, -4] },
+  cutouts: { pos: [3.2, 1.5, 9.4], tgt: [-1.75, 1.15, 9.4], fov: 48, shadow: [14, -2, 8] },
 };
 let shotState = null;
 function applyShot(name) {
@@ -1525,6 +1779,7 @@ document.querySelectorAll('#sSeason button').forEach(b => b.addEventListener('cl
 
 /* ================= запуск ================= */
 if (q.get('ui') === '0') document.body.classList.add('shot');
+if (q.get('clip')) renderer.clippingPlanes = [new THREE.Plane(V3(0, -1, 0), +q.get('clip'))]; /* разрез для проверки плана */
 if (q.get('rain') === '1') rain = 1;
 if (q.get('season')) setSeason(q.get('season')); else setSeason('spring');
 if (q.get('night') === '1') { night = 1; nightT = 1; applyLight(); }
@@ -1563,7 +1818,7 @@ function tick() {
       if (y < 0) { y += 20; x = cx_ + rr(-28, 28); z = cz_ + rr(-28, 28); } if (x < cx_ - 30) x += 60; if (x > cx_ + 30) x -= 60; if (z < cz_ - 30) z += 60; if (z > cz_ + 30) z -= 60;
       rainPos[o] = x; rainPos[o + 1] = y; rainPos[o + 2] = z; rainPos[o + 3] = x + .04; rainPos[o + 4] = y + .45; rainPos[o + 5] = z + .02; }
     rainGeo.attributes.position.needsUpdate = true; }
-  if (window.__flag && window.__flag.visible !== false) { const f = window.__flag, pa = f.geometry.attributes.position, b = f.userData.base; for (let i = 0; i < pa.count; i++) { const x = b[i * 3], y = b[i * 3 + 1]; pa.setZ(i, Math.sin(x * 4 - t * 5 + y) * .08 * x); pa.setY(i, y - x * x * .03); } pa.needsUpdate = true; f.geometry.computeVertexNormals(); }
+  for (const [fi, f] of (window.__flags || []).entries()) { if (!f.visible) continue; const pa = f.geometry.attributes.position, b = f.userData.base; for (let i = 0; i < pa.count; i++) { const x = b[i * 3], y = b[i * 3 + 1]; pa.setZ(i, Math.sin(x * 4 - t * 5 + y + fi * 1.7) * .08 * x); pa.setY(i, y - x * x * .03); } pa.needsUpdate = true; f.geometry.computeVertexNormals(); }
   skyDome.position.copy(camera.position);
   if (composer) { renderPass.camera = camera; gtao.camera = camera; renderer.shadowMap.autoUpdate = true; composer.render(dt); } else renderer.render(scene, camera);
   if (frame === 3) $('#loading').classList.add('hide');
