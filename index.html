@@ -96,7 +96,10 @@ const q = new URLSearchParams(location.search);
 const PP = q.get('pp') !== '0';
 const canvas = $('#c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !PP, powerPreference: 'high-performance', stencil: false, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+/* качество: ?q=high — без ограничений, ?q=low — экономный режим; по умолчанию плотность пикселей ограничена (1,5 на компьютере, 1,25 на телефоне) и качество подстраивается под частоту кадров */
+const QMODE = q.get('q') || 'auto', IS_PHONE = Math.min(screen.width, screen.height) < 700 || Math.min(innerWidth, innerHeight) < 600;
+const DPR_CAP = QMODE === 'high' ? 2 : QMODE === 'low' ? 1 : IS_PHONE ? 1.25 : 1.5;
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, DPR_CAP));
 renderer.setSize(innerWidth, innerHeight, false);
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1252,9 +1255,9 @@ function crown(arr, cx, cy, cz, rx, ry, rz, base, n, sz, det = 1) {
 }
 /* лиственные: ствол, видимые скелетные ветви, слоистые неровные кроны-«лепёшки» */
 const BLOSSOM = [], APPLES = [], FALLEN = [];
-function clump(arr, c, sz, col, flat) {
-  blob(arr, c.x, c.y, c.z, sz, sz * flat, sz * rr(.85, 1.1), col, 1, .4);
-  blob(arr, c.x + rr(-.3, .3) * sz, c.y + sz * flat * .55, c.z + rr(-.3, .3) * sz, sz * .68, sz * flat * .7, sz * .68, col.clone().offsetHSL(0, 0, .035), 1, .4);
+function clump(arr, c, sz, col, flat, det = 1) {
+  blob(arr, c.x, c.y, c.z, sz, sz * flat, sz * rr(.85, 1.1), col, det, .4);
+  blob(arr, c.x + rr(-.3, .3) * sz, c.y + sz * flat * .55, c.z + rr(-.3, .3) * sz, sz * .68, sz * flat * .7, sz * .68, col.clone().offsetHSL(0, 0, .035), det, .4);
 }
 function decid(x, z, o) {
   const L = o.lean ?? .2, base = V3(x, 0, z), top = V3(x + rr(-L, L), o.h, z + rr(-L, L));
@@ -1271,7 +1274,7 @@ function decid(x, z, o) {
     for (const p of [end, mid.clone().lerp(end, .5)]) for (let k = 0; k < o.cl; k++) {
       const c = p.clone().add(V3(rr(-.55, .55) * o.sz, rr(-.15, .35) * o.sz, rr(-.55, .55) * o.sz)), sz = o.sz * rr(.75, 1.2);
       const cc = o.col.clone().offsetHSL(rr(-.012, .012), rr(-.05, .05), rr(-.035, .035) + clamp((c.y - o.h) / (o.H + .1), 0, 1) * .05);
-      clump(leafArr, c, sz, cc, flat);
+      clump(leafArr, c, sz, cc, flat, o.det ?? 1);
       if (o.apple) {
         for (let m = 0; m < o.bl * 2.5; m++) { const u = rr(-.4, 1), b = rr(0, 6.28), sr = Math.sqrt(1 - u * u), k2 = rr(.9, 1.08); BLOSSOM.push(c.x + Math.cos(b) * sr * sz * k2, c.y + u * sz * flat * k2 + .02, c.z + Math.sin(b) * sr * sz * k2); }
         for (let m = 0; m < 2; m++) { const b = rr(0, 6.28); APPLES.push(c.x + Math.cos(b) * sz * .9, c.y - rr(0, .3) * sz * flat, c.z + Math.sin(b) * sz * .9); }
@@ -1292,9 +1295,9 @@ function appleTree(x, z, s = 1) {
 function bigTree(x, z, s = 1, hue = .27) {
   decid(x, z, { h: 2.8 * s, r: .24 * s, R: 2.8 * s, H: 3.2 * s, n: 7, t0: .7, sz: 1.0 * s, cl: 3, col: new THREE.Color().setHSL(hue, .42, .18), trunkCol: C(0x5a4a3c), flat: .6 });
 }
-function birch(x, z, s = 1) {
+function birch(x, z, s = 1, det = 1) {
   const h = rr(8, 12) * s;
-  decid(x, z, { h, r: .16 * s, R: 1.3 * s, H: 2.0 * s, n: 9, t0: .4, sz: .48 * s, cl: 4, flat: .62, col: new THREE.Color().setHSL(rr(.21, .25), .45, .25), trunkArr: GEO.birch, trunkCol: C(0xffffff), limbCol: C(0x6a5e56), droop: true, lean: .4 });
+  decid(x, z, { det, h, r: .16 * s, R: 1.3 * s, H: 2.0 * s, n: 9, t0: .4, sz: .48 * s, cl: 4, flat: .62, col: new THREE.Color().setHSL(rr(.21, .25), .45, .25), trunkArr: GEO.birch, trunkCol: C(0xffffff), limbCol: C(0x6a5e56), droop: true, lean: .4 });
 }
 function spruce(x, z, s = 1) {
   const h = rr(9, 15) * s; trunkSeg(GEO.trunk, V3(x, 0, z), V3(x, h * .92, z), .2 * s, .04, C(0x4b3a2e));
@@ -1379,7 +1382,7 @@ for (let i = 0; i < 900 && forestN < 230; i++) {
   if (x > -36 && x < -28 && z > -40 && z < 40) continue; /* дорога */
   if (Math.hypot(x - 34.6, z + 11.5) < 7 || Math.hypot(x - 31.5, z + 17.4) < 5) continue;
   const far = Math.max(Math.abs(x) - 40, Math.abs(z) - 22);
-  if (rnd() < (far > 8 ? .9 : .45)) { forestN++; if (rnd() < .5) birch(x, z, rr(.9, 1.3)); else spruce(x, z, rr(.8, 1.2)); }
+  if (rnd() < (far > 8 ? .9 : .45)) { forestN++; if (rnd() < .5) birch(x, z, rr(.9, 1.3), far > 6 ? 0 : 1); /* дальние берёзы — облегчённые кроны */ else spruce(x, z, rr(.8, 1.2)); }
 }
 for (const [x, z] of [[-26, -24], [-10, -24], [3, -25], [16, -24.5], [28, -23], [42, 2], [44, 10], [-38, 18], [-40, -14]]) { if (rnd() < .5) birch(x, z, 1.1); else spruce(x, z, 1); }
 /* материалы растительности */
@@ -1395,7 +1398,7 @@ function mergeTo(key, arr, mat, cast = true) { if (!arr.length) return; const m 
 const appleLeafMat = std({ map: TX.leaf, vertexColors: true, roughness: .85 }, { sway: .016, swayBase: .8, snowLo: .5, snowHi: .8 });
 mergeTo('leaf', GEO.leaf, leafMat); mergeTo('appleLeaf', GEO.appleLeaf, appleLeafMat); mergeTo('con', GEO.conifer, conMat); mergeTo('trunk', GEO.trunk, trunkMat); mergeTo('birch', GEO.birch, birchMat); mergeTo('branch', GEO.branch, branchMat); mergeTo('thuja', GEO.thuja, thujaMat);
 mergeTo('flowerW', GEO.flowerW, flowerMat, false); mergeTo('lilac', GEO.lilacF, std({ vertexColors: true, roughness: .8, emissive: 0x1a1a18 }, { sway: .018, swayBase: .3, noSnow: true }));
-{ const n = FLORETS.length / 3, im = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), std({ color: 0xf6f6f0, roughness: .9, emissive: 0x30302c }, { sway: .03, swayBase: .2, noSnow: true }), n); im.castShadow = true; im.userData.noAO = true; im.receiveShadow = true;
+{ const n = FLORETS.length / 3, im = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(1, 0), /* цветки по 1–2 см: 4 треугольника вместо 20 */ std({ color: 0xf6f6f0, roughness: .9, emissive: 0x30302c }, { sway: .03, swayBase: .2, noSnow: true }), n); im.castShadow = true; im.userData.noAO = true; im.receiveShadow = true;
   for (let i = 0; i < n; i++) { const sc = rr(.011, .019); tmpM.compose(V3(FLORETS[i * 3], FLORETS[i * 3 + 1], FLORETS[i * 3 + 2]), tmpQ.setFromEuler(new THREE.Euler(rr(0, 3), rr(0, 3), 0)), V3(sc * 1.4, sc, sc * 1.4)); im.setMatrixAt(i, tmpM); }
   scene.add(im); veg.florets = im; } mergeTo('flowerY', GEO.flowerY, flowerMat, false); mergeTo('hydr', GEO.hydr, flowerMat, false);
 veg.branch.visible = false;
@@ -1405,10 +1408,10 @@ function instPts(key, pts, geo, mat, smin, smax, colFn, stride = 3) {
   for (let i = 0; i < n; i++) { const sc = rr(smin, smax); tmpM.compose(V3(pts[i * stride], pts[i * stride + 1], pts[i * stride + 2]), tmpQ.setFromEuler(new THREE.Euler(rr(0, 3), rr(0, 3), 0)), V3(sc, sc * .8, sc)); im.setMatrixAt(i, tmpM); if (colFn) { colFn(col); im.setColorAt(i, col); } }
   im.castShadow = true; im.receiveShadow = true; scene.add(im); veg[key] = im; return im;
 }
-instPts('blossom', BLOSSOM, new THREE.IcosahedronGeometry(1, 0), std({ color: 0xffffff, roughness: .9, emissive: 0x2a2a28 }, { sway: .016, swayBase: .8, noSnow: true }), .026, .042, c => rnd() < .3 ? c.setHSL(rr(.2, .26), .55, rr(.55, .68)) : c.setHSL(rr(.92, .98), rr(.2, .6), rr(.88, .96)));
+instPts('blossom', BLOSSOM, new THREE.OctahedronGeometry(1, 0), std({ color: 0xffffff, roughness: .9, emissive: 0x2a2a28 }, { sway: .016, swayBase: .8, noSnow: true }), .026, .042, c => rnd() < .3 ? c.setHSL(rr(.2, .26), .55, rr(.55, .68)) : c.setHSL(rr(.92, .98), rr(.2, .6), rr(.88, .96)));
 instPts('apples', APPLES, new THREE.SphereGeometry(1, 8, 6), std({ color: 0xffffff, roughness: .45 }, { sway: .016, swayBase: .8, noSnow: true }), .04, .055, c => c.setHSL(rr(.0, .08), .7, rr(.35, .45)));
 instPts('fallen', FALLEN, new THREE.SphereGeometry(1, 8, 6), std({ color: 0xffffff, roughness: .5 }, { noSnow: true }), .045, .055, c => c.setHSL(rr(.0, .1), .7, rr(.3, .42)));
-instPts('yellow', GEO.yellow.flat(), new THREE.IcosahedronGeometry(1, 1), std({ color: 0xf5c518, roughness: .6 }, { sway: .05, swayBase: 0, noSnow: true }), .022, .032, null);
+instPts('yellow', GEO.yellow.flat(), new THREE.IcosahedronGeometry(1, 0), std({ color: 0xf5c518, roughness: .6 }, { sway: .05, swayBase: 0, noSnow: true }), .022, .032, null);
 
 /* трава: пучки-кресты, покачиваются */
 const grassMat = std({ map: TX.grass, alphaTest: .45, side: THREE.DoubleSide, roughness: .9, color: 0xffffff }, { sway: .12, swayBase: 0, noSnow: true });
@@ -1430,7 +1433,7 @@ const grassMat = std({ map: TX.grass, alphaTest: .45, side: THREE.DoubleSide, ro
   }
   /* одуванчики у избушки */
   im.count = k; scene.add(im); veg.grass = im; imD.count = kd; scene.add(imD); veg.grassDug = imD;
-  const ND = 5200, dand = new THREE.InstancedMesh(new THREE.SphereGeometry(.035, 6, 4), std({ color: 0xf6c90e, roughness: .6 }, { noSnow: true }), ND); let n = 0;
+  const ND = 5200, dand = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(.035, 0), std({ color: 0xf6c90e, roughness: .6 }, { noSnow: true }), ND); let n = 0;
   for (let i = 0; i < ND * 8 && n < ND; i++) { const x = rnd() < .8 ? rr(-30, 2) : rr(2, 16), z = rnd() < .8 ? rr(-21, -2) : rr(-2, 12); const m = maskAt(x, z); if (occupied(x, z) || inOrch(x, z) || m < .1) continue; if (m > .9 && rnd() < .7) continue; tmpM.compose(V3(x, rr(.06, .2), z), tmpQ.identity(), V3(1, .45, 1)); dand.setMatrixAt(n++, tmpM); }
   dand.count = n; scene.add(dand); veg.dand = dand;
 }
@@ -1647,7 +1650,8 @@ if (PP) {
     const rt = new THREE.WebGLRenderTarget(innerWidth * pr, innerHeight * pr, { type: THREE.HalfFloatType, samples: 4 });
     composer = new EffectComposer(renderer, rt);
     renderPass = new RenderPass(scene, camera); composer.addPass(renderPass);
-    gtao = new GTAOPass(scene, camera, innerWidth * pr, innerHeight * pr); gtao.output = GTAOPass.OUTPUT.Default; gtao.blendIntensity = .85;
+    gtao = new GTAOPass(scene, camera, Math.ceil(innerWidth * pr * .5), Math.ceil(innerHeight * pr * .5)); gtao.output = GTAOPass.OUTPUT.Default; gtao.blendIntensity = .85;
+    { const ss = gtao.setSize.bind(gtao); gtao.setSize = (w_, h_) => ss(Math.ceil(w_ * .5), Math.ceil(h_ * .5)); } /* затенение AO считаем в половинном разрешении */
     const ov = gtao.overrideVisibility.bind(gtao);
     gtao.overrideVisibility = function () { ov(); this.scene.traverse(o => { if (!o.visible) return; if (o.isSprite || o.isLine || o.userData.noAO) { o.visible = false; return; } const m = Array.isArray(o.material) ? o.material[0] : o.material; if (!m) return; if ((m.transparent && (!m.depthWrite || m.opacity < .5))) o.visible = false; }); };
     gtao.updateGtaoMaterial({ radius: 1.2, distanceExponent: 1.6, thickness: 1.4, distanceFallOff: 1.0, scale: 1.0, samples: 16 });
@@ -1676,6 +1680,60 @@ for (const w of WETM) w.push(w[0].color.clone());
 function setWet(on) { for (const [m, dry, wetR, c0] of WETM) { m.roughness = on ? wetR * .6 : dry; m.color.copy(c0).multiplyScalar(on ? .66 : 1); } rainLines.visible = on; puddles.visible = on && season !== 'winter'; if (veg.grass) U.uWind.value = on ? 1.8 : 1; }
 $('#bRain').addEventListener('click', () => { rain = rain ? 0 : 1; applyLight(); });
 
+/* ================= производительность: слияние статичных мешей ================= */
+/* Неподвижные меши с одинаковым материалом сливаются в один (в пределах своей «группы видимости»: постройка для выбора кликом, сезонные группы и т. п.).
+   Объекты, которые переключаются по сезону, двигаются или анимируются, остаются как есть. Внешний вид не меняется, число вызовов отрисовки падает в разы. */
+const MERGE_STATS = { before: 0, after: 0 };
+(function mergeStatic() {
+  if (q.get('merge') === '0') return;
+  scene.updateMatrixWorld(true);
+  const keep = new Set(), add = o => { if (o && o.isObject3D) keep.add(o); };
+  [...NOW, ...OLD, ...palletsRed, ...summerOnly, ...seasonal.notWinter, ...seasonal.winterOnly, ...(window.__flags || []), ...birds, ...smoke].forEach(add);
+  for (const k of ['__springG', '__poolWinter', '__sticks', '__snowHeap', '__ghSnow', '__ghPlants', '__pondWater', '__poolWater', '__flagTri', '__flagRed', '__beacon']) add(window[k]);
+  Object.values(veg).forEach(add); [paveGroup, puddles, rainLines, cat, skyDome, ground, farGround].forEach(add);
+  const groups = new Map(), inv = new THREE.Matrix4(), rel = new THREE.Matrix4();
+  const list = []; scene.traverse(o => list.push(o));
+  for (const m of list) {
+    if (!m.isMesh || m.isInstancedMesh || keep.has(m) || Array.isArray(m.material) || !m.visible) continue;
+    const mt = m.material; if (mt.transparent || !mt.colorWrite || !mt.depthWrite || m.customDepthMaterial || m.renderOrder || m.userData.base || m.morphTargetInfluences) continue;
+    let owner = m.parent, ok = true, a = m.parent;
+    while (a) { if (!a.visible) { ok = false; break; } if (a === cat) { ok = false; break; } a = a.parent; }
+    if (!ok) continue;
+    while (owner && owner !== scene && !keep.has(owner) && !owner.userData.bId) owner = owner.parent;
+    if (!owner) continue;
+    const key = owner.uuid + '|' + mt.uuid + '|' + m.castShadow + '|' + m.receiveShadow;
+    if (!groups.has(key)) groups.set(key, { owner, mt, cast: m.castShadow, recv: m.receiveShadow, items: [] });
+    groups.get(key).items.push(m);
+  }
+  for (const gr of groups.values()) {
+    if (gr.items.length < 2) continue;
+    inv.copy(gr.owner.matrixWorld).invert();
+    const geos = [];
+    for (const m of gr.items) {
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'color'].includes(k) || (k === 'color' && !gr.mt.vertexColors)) g.deleteAttribute(k);
+      const n = g.attributes.position.count;
+      if (!g.attributes.normal) g.computeVertexNormals();
+      if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
+      if (gr.mt.vertexColors && !g.attributes.color) g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+      g.morphAttributes = {}; g.clearGroups();
+      rel.multiplyMatrices(inv, m.matrixWorld); g.applyMatrix4(rel);
+      if (rel.determinant() < 0) { for (const k of Object.keys(g.attributes)) { const at = g.attributes[k], is = at.itemSize, arr = at.array; for (let t = 0; t < n; t += 3) for (let c = 0; c < is; c++) { const i1 = (t + 1) * is + c, i2 = (t + 2) * is + c, tmp = arr[i1]; arr[i1] = arr[i2]; arr[i2] = tmp; } } }
+      geos.push(g);
+    }
+    let merged; try { merged = mergeGeometries(geos, false); } catch (e) { merged = null; }
+    if (!merged) continue;
+    merged.computeBoundingSphere();
+    const mesh = new THREE.Mesh(merged, gr.mt); mesh.castShadow = gr.cast; mesh.receiveShadow = gr.recv; mesh.matrixAutoUpdate = false;
+    gr.owner.add(mesh); mesh.updateMatrix();
+    for (const m of gr.items) { m.parent.remove(m); m.geometry.dispose(); }
+    MERGE_STATS.before += gr.items.length; MERGE_STATS.after++;
+    for (const g of geos) g.dispose();
+  }
+  /* опустевшие группы-обёртки убираем из обхода */
+  scene.updateMatrixWorld(true);
+})();
+
 /* ================= сезоны, день/ночь ================= */
 let season = 'spring', night = 0, nightT = 0, rain = 0;
 const LEAF = { spring: [1.25, 1.35, .8], summer: [1, 1, 1], autumn: [1.9, 1.35, .45] }, ALEAF = { spring: [1.45, 1.6, 1.0], summer: [1, 1, 1], autumn: [1.8, 1.45, .5] };
@@ -1703,6 +1761,7 @@ function setSeason(s) {
   applyLight();
 }
 function applyLight() {
+  shadowDirty = true;
   const win = season === 'winter', n = nightT, wet = rain > 0;
   const topD = wet ? 0x8b949d : win ? 0xaeb7c2 : 0x4f8fd0, horD = wet ? 0xc3c9ce : win ? 0xdfe3e7 : 0xdbe9f3;
   skyMat.uniforms.top.value.setHex(topD).lerp(new THREE.Color(0x050b18), n); skyMat.uniforms.hor.value.setHex(horD).lerp(new THREE.Color(0x172238), n);
@@ -1788,6 +1847,26 @@ const FROZEN = q.get('t') !== null; if (FROZEN) U.uTime.value = +q.get('t');
 
 const clock = new THREE.Clock(); let frame = 0; const tag = $('#tag'), v3 = new THREE.Vector3();
 let catT = .1, catDir = 1, catPause = 0;
+const BENCH = q.get('bench') === '1';
+const lastCamM = new THREE.Matrix4(); let lastFov = 0, lastMoveT = 0, lastRenderT = -1; var shadowDirty = true;
+renderer.shadowMap.autoUpdate = false;
+/* адаптивное качество: первые секунды меряем частоту кадров; если ниже ~45, по шагу выключаем AO, затем свечение, затем снижаем плотность пикселей и густоту травы */
+const AQ = { t: 0, n: 0, step: 0, done: QMODE !== 'auto' || q.get('bench') === '1' };
+function applyQ(step) {
+  if (step >= 1 && gtao) gtao.enabled = false;
+  if (step >= 2 && bloom) bloom.enabled = false;
+  if (step >= 3) { renderer.setPixelRatio(1); resize(); }
+  if (step >= 4 && veg.grass) veg.grass.count = Math.floor(veg.grass.count / 2);
+}
+if (QMODE === 'low') applyQ(4);
+function adaptQuality(dt) {
+  if (AQ.done || frame < 30) return;
+  AQ.t += dt; AQ.n++;
+  if (AQ.t < 2) return;
+  const fps = AQ.n / AQ.t; AQ.t = 0; AQ.n = 0;
+  if (fps >= 45 || AQ.step >= 4) { AQ.done = true; return; }
+  AQ.step++; applyQ(AQ.step); console.info('качество снижено до шага', AQ.step, 'fps', fps.toFixed(1));
+}
 function tick() {
   requestAnimationFrame(tick);
   const dt = Math.min(clock.getDelta(), .1); frame++;
@@ -1820,12 +1899,19 @@ function tick() {
     rainGeo.attributes.position.needsUpdate = true; }
   for (const [fi, f] of (window.__flags || []).entries()) { if (!f.visible) continue; const pa = f.geometry.attributes.position, b = f.userData.base; for (let i = 0; i < pa.count; i++) { const x = b[i * 3], y = b[i * 3 + 1]; pa.setZ(i, Math.sin(x * 4 - t * 5 + y + fi * 1.7) * .08 * x); pa.setY(i, y - x * x * .03); } pa.needsUpdate = true; f.geometry.computeVertexNormals(); }
   skyDome.position.copy(camera.position);
-  if (composer) { renderPass.camera = camera; gtao.camera = camera; renderer.shadowMap.autoUpdate = true; composer.render(dt); } else renderer.render(scene, camera);
+  /* тени пересчитываем только когда сдвинулась камера (тень следует за видом), сменились свет/сезон, или раз в 3 кадра — для флага и кота */
+  const camMoved = !lastCamM.equals(camera.matrixWorld) || lastFov !== camera.fov; if (camMoved) { lastCamM.copy(camera.matrixWorld); lastFov = camera.fov; lastMoveT = t; }
+  const idle = !BENCH && frame > 60 && !fly && !orbiting && t - lastMoveT > 1.5 && !rainLines.visible;
+  if (idle && t - lastRenderT < 1 / 30 - .002) return; /* камера стоит — 30 кадров в секунду хватает для ветра, флага и кота */
+  lastRenderT = t;
+  renderer.shadowMap.needsUpdate = camMoved || shadowDirty || frame % 3 === 0; shadowDirty = false;
+  if (composer) { renderPass.camera = camera; gtao.camera = camera; composer.render(dt); } else renderer.render(scene, camera);
+  adaptQuality(dt);
   if (frame === 3) $('#loading').classList.add('hide');
   if (frame === 8) window.__ready = true;
 }
 tick();
-window.__plot = { camera, controls, scene, BLD, setSeason, applyShot, flyTo, SHOTS };
+window.__plot = { camera, controls, scene, BLD, setSeason, applyShot, flyTo, SHOTS, renderer, veg, MERGE_STATS };
 </script>
 </body>
 </html>
